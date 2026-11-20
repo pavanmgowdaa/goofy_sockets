@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"github.com/golang-jwt/jwt/v5"
@@ -48,4 +49,11 @@ func RandomToken() (string, error) {
 	b := make([]byte, 32)
 	_, e := rand.Read(b)
 	return hex.EncodeToString(b), e
+}
+
+// SHA256Hex is for high-entropy bearer secrets (refresh/QR/device tokens), not
+// user passwords. Passwords must continue to use the adaptive bcrypt functions.
+func SHA256Hex(value []byte) string {
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:])
 }

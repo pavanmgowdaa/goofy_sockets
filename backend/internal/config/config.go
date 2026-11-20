@@ -22,8 +22,8 @@ func Load() (Config, error) {
 	if c.DatabaseURL == "" || len(c.JWTSecret) < 32 {
 		return c, errors.New("DATABASE_URL and JWT_SECRET (at least 32 characters) are required")
 	}
-	if len(c.DeviceAPIKeyPepper) < 32 {
-		return c, errors.New("DEVICE_API_KEY_PEPPER (at least 32 characters) is required")
+	if c.DeviceAPIKeyPepper != "" && len(c.DeviceAPIKeyPepper) < 32 {
+		return c, errors.New("DEVICE_API_KEY_PEPPER must be at least 32 characters when configured")
 	}
 	if (c.RazorpayKeyID != "" || c.RazorpayKeySecret != "" || c.RazorpayWebhookSecret != "") && (c.RazorpayKeyID == "" || c.RazorpayKeySecret == "" || c.RazorpayWebhookSecret == "") {
 		return c, errors.New("all three Razorpay credentials must be configured together")

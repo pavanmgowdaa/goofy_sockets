@@ -37,3 +37,11 @@ func TestTokenRoundTrip(t *testing.T) {
 		t.Fatal("expected signature validation failure")
 	}
 }
+
+func TestSHA256Hex(t *testing.T) {
+	got := SHA256Hex([]byte("abc"))
+	const expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	if got != expected {
+		t.Fatalf("SHA256Hex(abc) = %s; want %s", got, expected)
+	}
+}

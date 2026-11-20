@@ -45,13 +45,28 @@ paths:
       summary: Create a draft event
       responses:
         '201': { description: Created }
+  /v1/events/{id}/ticket-types:
+    get:
+      summary: List published event ticket types and current availability
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Ticket types }
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Add ticket inventory to an owned draft event
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: Ticket type created }
+        '409': { description: Event capacity would be exceeded }
   /v1/bookings:
     post:
       security: [{ bearerAuth: [] }]
       summary: Reserve tickets with an idempotency key
       responses:
-        '201': { description: Pending payment booking }
-        '409': { description: Insufficient inventory }
+        '201': { description: Pending booking with a 15 minute reservation expiry }
+        '409': { description: Insufficient inventory or user purchase limit exceeded }
   /v1/bookings/{id}/payment-order:
     post:
       security: [{ bearerAuth: [] }]
