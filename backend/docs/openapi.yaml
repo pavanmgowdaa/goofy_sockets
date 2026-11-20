@@ -60,6 +60,15 @@ paths:
       summary: List tickets owned by the authenticated user
       responses:
         '200': { description: Ticket list; QR secrets are not returned }
+  /v1/me/tickets/{id}/credential:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Retrieve the authenticated owner's active ticket QR credential
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: No-store response containing the ticket QR token }
+        '404': { description: Active ticket credential not found }
   /v1/tickets/{id}/transfer:
     post:
       security: [{ bearerAuth: [] }]
@@ -100,6 +109,15 @@ paths:
       responses:
         '201': { description: Pending booking with a 15 minute reservation expiry }
         '409': { description: Insufficient inventory or user purchase limit exceeded }
+  /v1/bookings/{id}:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Read the authenticated user's booking payment and issuance status
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Current booking status and issued ticket count }
+        '404': { description: Booking not found }
   /v1/bookings/{id}/payment-order:
     post:
       security: [{ bearerAuth: [] }]

@@ -1,0 +1,3050 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>FAIRPASS — 360° Stadium Gallery & Verified Passes</title>
+
+  <!-- Google Fonts matching ShutaBug's condensed display + editorial serif + crisp UI sans/mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Three.js r128 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Anton', 'sans-serif'],
+            serif: ['Cormorant Garamond', 'serif'],
+            sans: ['Inter', 'sans-serif'],
+            mono: ['Space Mono', 'monospace'],
+          },
+          colors: {
+            navyDeep: '#0d0e17',
+            navySurface: '#11131f',
+            ivoryWall: '#f2f3f7',
+            slateFloor: '#2a324b',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #0d0e17;
+      color: #ffffff;
+      font-family: 'Inter', sans-serif;
+      user-select: none;
+    }
+
+    #webgl-container {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+      cursor: default;
+    }
+
+    #webgl-container.pointer-hover {
+      cursor: none;
+    }
+
+    /* Custom ShutaBug Floating Cursor Pill ("COME CLOSER" -> "OPEN THE PASS") */
+    #custom-cursor {
+      position: fixed;
+      top: 0;
+      left: 0;
+      pointer-events: none;
+      z-index: 70;
+      transform: translate(-50%, -50%) scale(0.85);
+      opacity: 0;
+      transition: opacity 0.18s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: transform, opacity;
+    }
+
+    #custom-cursor.visible {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+
+    /* Subtle stadium atmospheric vignette */
+    .stadium-vignette {
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      z-index: 4;
+      background:
+        radial-gradient(circle at 50% 48%, rgba(13, 14, 23, 0) 50%, rgba(7, 8, 15, 0.56) 100%),
+        linear-gradient(180deg, rgba(9, 10, 18, 0.72) 0%, rgba(9, 10, 18, 0) 16%, rgba(9, 10, 18, 0) 76%, rgba(9, 10, 18, 0.78) 100%);
+    }
+
+    /* Custom Scrollbars for List & Detail Views */
+    .custom-scroll::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: #0d0e17;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.18);
+      border-radius: 9999px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.35);
+    }
+
+    /* Smooth View Transitions */
+    .view-panel {
+      transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .view-hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(10px);
+    }
+
+    .view-active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+
+    /* Pill Toggle Switch */
+    .toggle-pill-bg {
+      transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    /* Subtle pulse for live stadium indicator */
+    @keyframes pulseSoft {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    .live-dot {
+      animation: pulseSoft 2.2s infinite ease-in-out;
+    }
+
+    /* Loader Curtain */
+    #intro-curtain {
+      transition: opacity 0.85s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.85s ease;
+    }
+
+    /* Updated login experience from the supplied FAIRPASS page. */
+    #login-page { position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;padding:92px 24px 58px;overflow-y:auto;background:linear-gradient(115deg,rgba(7,9,17,.88),rgba(7,9,17,.96));backdrop-filter:blur(18px);opacity:0;visibility:hidden;pointer-events:none;transform:translateY(12px) scale(.99);transition:opacity .35s ease,transform .35s ease,visibility .35s ease; }
+    #login-page.login-open { opacity:1;visibility:visible;pointer-events:auto;transform:translateY(0) scale(1); }
+    #login-page .login-shell { width:min(100%,1040px);display:grid;grid-template-columns:minmax(0,1fr) minmax(340px,430px);align-items:center;gap:clamp(28px,5vw,72px); }
+    #login-page .login-intro { max-width:540px;animation:fpRise .65s both; }
+    #login-page .login-eyebrow { display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.58);font:10px 'Space Mono',monospace;letter-spacing:.24em;text-transform:uppercase; }
+    #login-page .login-live-dot { width:7px;height:7px;border-radius:50%;background:#69d7a0;box-shadow:0 0 14px #69d7a0;animation:fpPulse 2s infinite; }
+    #login-page .login-intro h1 { margin:22px 0 16px;font:clamp(54px,7vw,96px)/.91 'Anton',sans-serif;letter-spacing:.01em;text-transform:uppercase;text-shadow:0 10px 40px #0008; }
+    #login-page .login-intro h1 span { color:#f5c84b; }
+    #login-page .login-intro p { max-width:400px;color:rgba(255,255,255,.65);font-size:13px;line-height:1.8; }
+    #login-page .login-eventline { margin-top:30px;color:rgba(255,255,255,.42);font:9px 'Space Mono',monospace;letter-spacing:.16em;text-transform:uppercase; }
+    #login-page .login-card { position:relative;padding:34px 32px 27px;background:linear-gradient(145deg,rgba(20,23,37,.96),rgba(10,12,21,.96));border:1px solid rgba(255,255,255,.19);border-radius:18px;box-shadow:0 30px 100px rgba(0,0,0,.5),inset 0 1px rgba(255,255,255,.08);backdrop-filter:blur(22px);animation:fpRise .7s .08s both; }
+    #login-page .login-card:before { content:'';position:absolute;left:32px;top:-1px;width:64px;height:2px;background:#f5c84b;box-shadow:0 0 18px #f5c84b80; }
+    #login-page .login-kicker { color:#f5c84b;font:9px 'Space Mono',monospace;letter-spacing:.22em;text-transform:uppercase; }
+    #login-page .login-card h2 { margin:11px 0 5px;font:36px 'Anton',sans-serif;letter-spacing:.04em;text-transform:uppercase; }
+    #login-page .login-sub { margin:0 0 25px;color:rgba(255,255,255,.58);font-size:12px; }
+    #login-page .login-field { margin-bottom:15px; }
+    #login-page .login-field label { display:block;margin-bottom:8px;color:rgba(255,255,255,.62);font:9px 'Space Mono',monospace;letter-spacing:.15em;text-transform:uppercase; }
+    #login-page .login-inputbox { height:47px;display:flex;align-items:center;border:1px solid rgba(255,255,255,.16);border-radius:9px;background:rgba(255,255,255,.045);transition:.2s; }
+    #login-page .login-inputbox:focus-within { border-color:rgba(245,200,75,.75);box-shadow:0 0 0 3px rgba(245,200,75,.08); }
+    #login-page .login-inputbox input { width:100%;height:100%;min-width:0;border:0;outline:0;background:transparent;color:#fff;padding:0 13px;font:12px Inter,sans-serif; }
+    #login-page .login-inputbox input::placeholder { color:rgba(255,255,255,.3); }
+    #login-page .login-showpass,#login-page .login-link { border:0;background:none;color:#f3d47d;padding:10px 12px;cursor:pointer;font:9px 'Space Mono',monospace; }
+    #login-page .login-options { display:flex;justify-content:space-between;align-items:center;gap:10px;margin:3px 0 20px;color:rgba(255,255,255,.58);font-size:10px; }
+    #login-page .login-remember { display:flex;align-items:center;gap:7px; }
+    #login-page .login-remember input { accent-color:#f5c84b; }
+    #login-page .login-submit { width:100%;height:48px;border:0;border-radius:9px;background:#f2f3f7;color:#0d0e17;font:700 10px 'Space Mono',monospace;letter-spacing:.19em;cursor:pointer;transition:.2s; }
+    #login-page .login-submit:hover { transform:translateY(-2px);background:#fff;box-shadow:0 12px 30px #0006; }
+    #login-page .login-submit:disabled { opacity:.6;cursor:wait; }
+    #login-page .login-divider { display:flex;align-items:center;gap:12px;margin:20px 0;color:rgba(255,255,255,.32);font:9px 'Space Mono',monospace;letter-spacing:.1em; }
+    #login-page .login-divider:before,#login-page .login-divider:after { content:'';height:1px;flex:1;background:rgba(255,255,255,.12); }
+    #login-page .login-social { display:grid;grid-template-columns:1fr 1fr;gap:9px; }
+    #login-page .login-social button { height:40px;border:1px solid rgba(255,255,255,.15);border-radius:8px;background:rgba(255,255,255,.04);color:rgba(255,255,255,.8);font:10px Inter,sans-serif;cursor:pointer; }
+    #login-page .login-social button:hover { background:rgba(255,255,255,.1); }
+    #login-page .login-signup { margin:20px 0 0;text-align:center;color:rgba(255,255,255,.5);font-size:10px; }
+    #login-page .login-security { margin-top:16px;text-align:center;color:rgba(255,255,255,.32);font:8px 'Space Mono',monospace;letter-spacing:.1em;text-transform:uppercase; }
+    #login-page .login-back { position:absolute;top:22px;left:26px;padding:9px 13px;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:rgba(13,14,23,.65);color:rgba(255,255,255,.8);font:9px 'Space Mono',monospace;letter-spacing:.12em;text-transform:uppercase;cursor:pointer; }
+    #login-page .login-close { position:absolute;top:23px;right:26px;width:36px;height:36px;border:1px solid rgba(255,255,255,.16);border-radius:50%;background:rgba(13,14,23,.65);color:#fff;font-size:18px;cursor:pointer; }
+    #login-toast { position:fixed;z-index:110;left:50%;bottom:28px;transform:translate(-50%,18px);opacity:0;pointer-events:none;padding:11px 17px;border-radius:999px;background:#f2f3f7;color:#0d0e17;font:10px 'Space Mono',monospace;transition:.25s;max-width:90vw;text-align:center; }
+    #login-toast.show { opacity:1;transform:translate(-50%,0); }
+    @keyframes fpPulse { 50% { opacity:.4;transform:scale(.8); } }
+    @keyframes fpRise { from { opacity:0;transform:translateY(16px); } to { opacity:1;transform:translateY(0); } }
+    @media(max-width:800px) { #login-page { align-items:flex-start;padding:82px 18px 35px; } #login-page .login-shell { display:flex;flex-direction:column;gap:20px;width:min(100%,440px); } #login-page .login-intro { text-align:center; } #login-page .login-intro h1 { font-size:48px;margin:12px 0; } #login-page .login-intro p,#login-page .login-eventline { display:none; } #login-page .login-eyebrow { justify-content:center; } #login-page .login-card { width:100%;padding:27px 23px 23px; } #login-page .login-back { top:15px;left:16px; } #login-page .login-close { top:15px;right:16px; } }
+    @media(max-height:700px) and (min-width:801px) { #login-page { padding-top:70px;padding-bottom:35px; } #login-page .login-card { padding:25px 28px 21px; } #login-page .login-sub { margin-bottom:16px; } #login-page .login-field { margin-bottom:11px; } #login-page .login-options { margin-bottom:14px; } }
+  </style>
+</head>
+<body>
+
+  <!-- INITIAL LOADING CURTAIN -->
+  <div id="intro-curtain" class="fixed inset-0 z-[100] bg-[#0d0e17] flex flex-col items-center justify-center px-6 text-center">
+    <div class="w-11 h-11 rounded-lg bg-[#f2f3f7] text-[#0d0e17] flex items-center justify-center mb-5 shadow-2xl">
+      <svg class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3.5a1.5 1.5 0 0 0 0 3V19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7.5a1.5 1.5 0 0 0 0-3V5zm4.5 3.5v7h2.2v-2.6h3.1v-1.8h-3.1v-.8h3.6V8.5H8.5z"/>
+      </svg>
+    </div>
+    <p class="font-mono text-[11px] tracking-[0.28em] text-white/50 uppercase mb-2">ENTERING 360° STADIUM CONCOURSE</p>
+    <h1 class="font-display text-4xl sm:text-5xl tracking-wide text-white uppercase">FAIRPASS ARENA GALLERY</h1>
+    <div class="w-48 h-[2px] bg-white/10 rounded-full overflow-hidden mt-6">
+      <div id="loader-bar" class="h-full bg-[#f2f3f7] w-0 transition-all duration-500"></div>
+    </div>
+  </div>
+
+  <!-- CUSTOM FLOATING CURSOR PILL ("COME CLOSER" -> "OPEN THE PASS") -->
+  <div id="custom-cursor" class="hidden md:flex items-center gap-2 px-4 py-2 rounded-full bg-[#0d0e17]/95 border border-white/25 backdrop-blur-md shadow-[0_10px_30px_rgba(0,0,0,0.75)]">
+    <span id="custom-cursor-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+    <span id="custom-cursor-text" class="font-mono text-[10px] tracking-[0.2em] uppercase text-white font-bold">COME CLOSER</span>
+  </div>
+
+  <!-- THREE.JS 360° CURVED STADIUM GALLERY CANVAS -->
+  <div id="webgl-container"></div>
+  <div id="vignette-overlay" class="stadium-vignette"></div>
+
+  <!-- ===================================================================== -->
+  <!-- 1. TOP FIXED NAVIGATION BAR (64px HEIGHT, SHUTABUG CHROME)            -->
+  <!-- ===================================================================== -->
+  <header id="top-navbar" class="fixed top-0 left-0 right-0 h-16 z-40 px-4 sm:px-7 flex items-center justify-between transition-colors duration-300 bg-transparent">
+    <!-- Left: Custom Geometric FAIRPASS Emblem + Clean Horizontal Nav Links -->
+    <div class="flex items-center gap-5 sm:gap-7">
+      <button onclick="resetToGalleryHome()" class="group flex items-center gap-2.5 focus:outline-none" title="FAIRPASS Home">
+        <div class="w-8 h-8 rounded-[7px] bg-[#f2f3f7] text-[#0d0e17] flex items-center justify-center shadow-lg transition-transform duration-300 group-hover:scale-105">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 6v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-6V6zm5.5 2.5v7h2.3v-2.5h3.2v-1.9h-3.2v-.7h3.7V8.5H8.5z"/>
+          </svg>
+        </div>
+        <span class="font-display text-lg tracking-wider text-white hidden sm:inline">FAIRPASS</span>
+      </button>
+
+      <nav class="flex items-center gap-4 sm:gap-6 text-[13px] font-medium text-white/85">
+        <button onclick="toggleIndexModal(true)" class="hover:text-white transition-colors">Index</button>
+        <button onclick="switchMode('list')" class="hover:text-white transition-colors">Events</button>
+        <button onclick="toggleInfoModal(true)" class="hover:text-white transition-colors hidden md:inline">Info</button>
+        <button onclick="jumpToCollection(3)" class="hover:text-white transition-colors hidden md:inline">VIP</button>
+        <button onclick="toggleHelpModal(true)" class="hover:text-white transition-colors">Help</button>
+      </nav>
+    </div>
+
+    <!-- Right: Search Pill (Ctrl K), Currency Selector, Atmosphere Toggle, Saved, Account, Bag -->
+    <div class="flex items-center gap-2 sm:gap-2.5">
+      <!-- Search Pill -->
+      <button onclick="toggleSearchModal(true)" class="flex items-center gap-2.5 sm:gap-6 px-3 sm:px-3.5 py-1.5 rounded-full bg-white/[0.08] hover:bg-white/[0.14] border border-white/15 backdrop-blur-md text-xs text-white/85 transition-all">
+        <span class="flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5 text-white/75" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20 20-3.5-3.5"></path>
+          </svg>
+          <span>Search</span>
+        </span>
+        <kbd class="hidden sm:inline-block font-mono text-[10px] text-white/55 bg-white/10 px-1.5 py-0.5 rounded">Ctrl K</kbd>
+      </button>
+
+      <!-- Currency Selector Pill -->
+      <div class="relative">
+        <select id="currency-select" onchange="changeCurrency(this.value)" aria-label="Currency"
+          class="appearance-none bg-white/[0.08] hover:bg-white/[0.14] border border-white/15 backdrop-blur-md text-white text-xs font-medium rounded-full pl-3 pr-6 py-1.5 cursor-pointer focus:outline-none">
+          <option value="INR" class="bg-[#0d0e17] text-white">INR</option>
+          <option value="USD" class="bg-[#0d0e17] text-white">USD</option>
+          <option value="EUR" class="bg-[#0d0e17] text-white">EUR</option>
+          <option value="GBP" class="bg-[#0d0e17] text-white">GBP</option>
+        </select>
+        <svg class="w-3 h-3 text-white/70 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </div>
+
+      <!-- Theme / Stadium Floodlight Atmosphere Toggle Icon -->
+      <button onclick="toggleStadiumAtmosphere()" class="p-2 rounded-full hover:bg-white/10 text-white/85 hover:text-white transition-colors" title="Toggle Stadium Lighting Mood">
+        <svg id="atmosphere-icon" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+
+      <!-- Saved Watchlist Button -->
+      <button onclick="toggleSavedModal(true)" class="relative p-2 rounded-full hover:bg-white/10 text-white/85 hover:text-white transition-colors" title="Saved Events">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+        </svg>
+        <span id="saved-badge" class="hidden absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400"></span>
+      </button>
+
+      <!-- Verified Fan ID / Account -->
+      <button onclick="accessToken ? toggleAccountModal(true) : openLoginPage()" class="hidden sm:flex p-2 rounded-full hover:bg-white/10 text-white/85 hover:text-white transition-colors" title="FairPass Account">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+          <circle cx="12" cy="8" r="4"/>
+          <path d="M4 20c1.8-3.6 5-5 8-5s6.2 1.4 8 5"/>
+        </svg>
+      </button>
+
+      <!-- Pass Bag Button -->
+      <button onclick="toggleBagDrawer(true)" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full hover:bg-white/10 text-xs font-medium text-white transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+          <path d="M6 7h12l1 13H5L6 7z"/>
+          <path d="M9 7V5a3 3 0 0 1 6 0v2"/>
+        </svg>
+        <span id="bag-count" class="font-mono text-[11px]">(0)</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===================================================================== -->
+  <!-- 2. SECONDARY FLOATING CONTROL ROW: GALLERY / LIST TOGGLE PILL         -->
+  <!--    (Top-right beneath navbar, matching ShutaBug exact layout)         -->
+  <!-- ===================================================================== -->
+  <div id="mode-toggle-wrapper" class="fixed top-[72px] right-4 sm:right-7 z-40">
+    <div class="relative flex items-center bg-[#0d0e17]/85 border border-white/20 backdrop-blur-xl rounded-full p-1 shadow-[0_10px_28px_rgba(0,0,0,0.6)]">
+      <!-- Sliding Ivory Pill Indicator (#f2f3f7) -->
+      <div id="toggle-slider" class="toggle-pill-bg absolute top-1 bottom-1 left-1 w-[84px] bg-[#f2f3f7] rounded-full shadow"></div>
+
+      <button id="btn-mode-gallery" onclick="switchMode('gallery')"
+        class="relative z-10 w-[84px] py-1.5 font-mono text-[10px] tracking-[0.18em] font-bold uppercase text-[#0d0e17] transition-colors">
+        GALLERY
+      </button>
+      <button id="btn-mode-list" onclick="switchMode('list')"
+        class="relative z-10 w-[84px] py-1.5 font-mono text-[10px] tracking-[0.18em] font-bold uppercase text-white/65 transition-colors">
+        LIST
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 3. 360° GALLERY HUD OVERLAYS (VISIBLE IN GALLERY MODE)                -->
+  <!-- ===================================================================== -->
+  <div id="gallery-hud" class="fixed inset-0 z-20 pointer-events-none transition-opacity duration-500">
+
+    <!-- Top-Center Subtle Live Stadium Concourse Status -->
+    <div class="hidden lg:flex items-center gap-2 px-3.5 py-1 rounded-full bg-[#0d0e17]/60 border border-white/10 backdrop-blur-md fixed top-5 left-1/2 -translate-x-1/2">
+      <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot"></span>
+      <span class="font-mono text-[10px] tracking-[0.2em] text-white/75 uppercase">360° STADIUM BOWL · <span id="hud-angle-readout">000°</span></span>
+    </div>
+
+    <!-- Zoomed-In Return Pill (Appears when camera glides in to inspect a display bay) -->
+    <div id="zoom-controls" class="fixed top-[74px] left-1/2 -translate-x-1/2 pointer-events-auto opacity-0 -translate-y-2 transition-all duration-300">
+      <div class="flex items-center gap-3 bg-[#0d0e17]/90 border border-white/20 backdrop-blur-xl px-4 py-2 rounded-full shadow-2xl">
+        <button onclick="resumeConcourseTravel()" class="flex items-center gap-1.5 text-xs font-medium text-white/80 hover:text-white pr-3 border-r border-white/15">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+          <span>Resume Concourse</span>
+        </button>
+        <button onclick="openZoomedEventDetail()" class="flex items-center gap-1.5 font-mono text-[11px] font-bold tracking-wider uppercase text-amber-300 hover:text-amber-200">
+          <span>OPEN THE PASS</span>
+          <span>→</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Bottom-Center Dynamic Collection Title HUD (ShutaBug Centerpiece) -->
+    <div class="fixed bottom-14 sm:bottom-11 left-1/2 -translate-x-1/2 text-center w-[92vw] max-w-2xl pointer-events-auto">
+      <p id="hud-eyebrow" class="font-mono text-[10px] sm:text-[11px] tracking-[0.26em] text-white/75 uppercase mb-1 drop-shadow">
+        YOU ARE WALKING PAST
+      </p>
+      <h2 id="hud-collection-title" class="font-display text-3xl sm:text-5xl md:text-[54px] leading-none tracking-wide text-white uppercase drop-shadow-[0_4px_24px_rgba(0,0,0,0.75)] transition-all duration-300">
+        CHAMPIONSHIP FOOTBALL
+      </h2>
+      <div class="mt-2.5 flex items-center justify-center">
+        <button id="hud-enter-btn" onclick="enterCurrentCollection()" class="group inline-flex items-center gap-1.5 font-mono text-[10px] sm:text-[11px] tracking-[0.2em] uppercase text-white/90 hover:text-white border-b border-white/50 hover:border-white pb-0.5 transition-all">
+          <span>ENTER THE COLLECTION</span>
+          <span class="transition-transform duration-200 group-hover:translate-x-1">→</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Bottom-Left Dismissible Editorial Card ("DISPATCHES FROM THE STANDS") -->
+    <div id="presale-card" class="hidden sm:block fixed bottom-5 left-6 w-[296px] bg-[#11131f]/95 border border-white/15 rounded-xl p-4 shadow-2xl backdrop-blur-xl pointer-events-auto transition-all duration-300">
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="font-mono text-[9px] tracking-[0.22em] text-white/45 uppercase">PRIORITY ACCESS</span>
+        <button onclick="dismissPresaleCard()" class="text-white/50 hover:text-white text-sm leading-none p-1" aria-label="Close card">×</button>
+      </div>
+      <h3 class="font-display text-xl tracking-wide text-white uppercase leading-tight mb-1.5">
+        DISPATCHES FROM THE STANDS
+      </h3>
+      <p class="text-[11.5px] leading-relaxed text-white/65 mb-3">
+        Priority presales, paddock passes, and stadium drops. Nothing else.
+      </p>
+      <form onsubmit="handlePresaleSignup(event)" class="relative flex items-center">
+        <input id="presale-email" type="email" required placeholder="you@example.com"
+          class="w-full bg-white/[0.06] border border-white/15 focus:border-white/45 rounded-full pl-3.5 pr-10 py-2 text-xs text-white placeholder-white/35 focus:outline-none transition-colors" />
+        <button type="submit" class="absolute right-1.5 w-7 h-7 rounded-full bg-white/15 hover:bg-[#f2f3f7] hover:text-[#0d0e17] text-white flex items-center justify-center transition-colors" aria-label="Subscribe">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+        </button>
+      </form>
+      <p class="mt-2 font-mono text-[9px] text-white/35">Anti-scalp verified. Unsubscribe anytime.</p>
+    </div>
+
+    <!-- Bottom-Center Minimal Social & Copyright Footer Chrome -->
+    <div class="fixed bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-3 text-[10px] font-mono text-white/45 pointer-events-auto">
+      <a href="#social-x" onclick="event.preventDefault(); showToast('FAIRPASS Official @fairpass_arena')" class="hover:text-white transition-colors">X</a>
+      <span>·</span>
+      <a href="#social-ig" onclick="event.preventDefault(); showToast('FAIRPASS Instagram @fairpass.live')" class="hover:text-white transition-colors">IG</a>
+      <span>·</span>
+      <span>© FAIRPASS. 2026</span>
+    </div>
+
+    <!-- Bottom-Right Collection Counter & Policies Footer Chrome -->
+    <div class="hidden md:flex flex-col items-end fixed bottom-4 right-7 text-right pointer-events-auto">
+      <span id="hud-collection-counter" class="font-mono text-[10px] tracking-[0.22em] text-white/80 uppercase mb-1">
+        01 / 04 · 16 EVENTS
+      </span>
+      <button onclick="toggleInfoModal(true)" class="font-mono text-[9px] tracking-[0.14em] text-white/45 hover:text-white/80 transition-colors">
+        Policies: Privacy, Terms and Entry
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 4. LIST VIEW (EXACT SHUTABUG EDITORIAL CATALOG GROUPED BY COLLECTION) -->
+  <!-- ===================================================================== -->
+  <section id="list-view" class="view-panel view-hidden fixed inset-0 z-30 bg-[#0d0e17] overflow-y-auto custom-scroll pt-28 pb-24 px-5 sm:px-10 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <!-- Top Filter Bar -->
+      <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-6 border-b border-white/15">
+        <div>
+          <p class="font-mono text-[10px] tracking-[0.24em] text-white/50 uppercase mb-1">STADIUM SEASON DIRECTORY</p>
+          <div class="flex items-baseline gap-3">
+            <h2 id="list-active-heading" class="font-display text-3xl sm:text-5xl tracking-wide text-white uppercase">ALL STADIUM EVENTS</h2>
+            <span id="list-count-label" class="font-mono text-xs text-white/50">16 EVENTS</span>
+          </div>
+        </div>
+
+        <!-- Collection Filter Pills -->
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="filterListCollection('ALL')" data-filter="ALL" class="list-filter-btn px-3.5 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-[#f2f3f7] text-[#0d0e17] font-semibold transition-all">
+            ALL (16)
+          </button>
+          <button onclick="filterListCollection('CHAMPIONSHIP FOOTBALL')" data-filter="CHAMPIONSHIP FOOTBALL" class="list-filter-btn px-3.5 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-white/10 text-white/75 hover:bg-white/20 transition-all">
+            FOOTBALL
+          </button>
+          <button onclick="filterListCollection('CRICKET WORLD NIGHTS')" data-filter="CRICKET WORLD NIGHTS" class="list-filter-btn px-3.5 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-white/10 text-white/75 hover:bg-white/20 transition-all">
+            CRICKET
+          </button>
+          <button onclick="filterListCollection('FORMULA NIGHT CIRCUIT')" data-filter="FORMULA NIGHT CIRCUIT" class="list-filter-btn px-3.5 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-white/10 text-white/75 hover:bg-white/20 transition-all">
+            FORMULA
+          </button>
+          <button onclick="filterListCollection('STADIUM WORLD TOUR')" data-filter="STADIUM WORLD TOUR" class="list-filter-btn px-3.5 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-white/10 text-white/75 hover:bg-white/20 transition-all">
+            CONCERTS
+          </button>
+        </div>
+      </div>
+
+      <!-- Grouped Editorial Rows Container -->
+      <div id="list-rows-container" class="mt-4">
+        <!-- Populated dynamically via JS -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- 5. EVENT & TICKET DETAIL PAGE (EXACT SHUTABUG PRINT DETAIL LAYOUT)    -->
+  <!-- ===================================================================== -->
+  <section id="detail-view" class="view-panel view-hidden fixed inset-0 z-35 bg-[#0d0e17] overflow-y-auto custom-scroll pt-24 pb-24 px-5 sm:px-10 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <!-- Top Breadcrumb Bar -->
+      <div class="flex items-center justify-between py-4 border-b border-white/10 mb-8">
+        <button onclick="closeDetailView()" class="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-widest text-white/75 hover:text-white transition-colors">
+          <span>← Events</span>
+        </button>
+        <div class="flex items-center gap-3">
+          <button onclick="navigateDetailEvent(-1)" class="px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 text-xs font-mono">← PREV</button>
+          <button onclick="navigateDetailEvent(1)" class="px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 text-xs font-mono">NEXT →</button>
+        </div>
+      </div>
+
+      <!-- Two-Column ShutaBug Editorial Detail Composition -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-14 items-start">
+        <!-- Left Column: Crisp Upright Event Visual (1/1) + "View In Stadium" -->
+        <div class="lg:col-span-6 flex flex-col items-center">
+          <div class="w-full max-w-lg bg-[#f2f3f7] p-4 sm:p-6 rounded-xl shadow-[0_25px_70px_rgba(0,0,0,0.75)] relative">
+            <img id="detail-poster-img" src="" alt="Event Poster" class="w-full h-auto rounded-md shadow-md block" />
+          </div>
+
+          <div class="w-full max-w-lg flex items-center justify-between mt-4 px-1">
+            <span class="font-mono text-xs text-white/50">1/1 · VERIFIED STADIUM BAY</span>
+            <button onclick="viewCurrentEventInStadium()" class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs text-white transition-colors">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              <span>View In Stadium</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Right Column: Editorial Event & Ticket Spec -->
+        <div class="lg:col-span-6">
+          <p id="detail-breadcrumb" class="font-mono text-xs text-white/50 uppercase tracking-widest mb-2">
+            • Verified Stadium Pass
+          </p>
+
+          <h1 id="detail-collection-heading" class="font-display text-4xl sm:text-6xl tracking-wide text-white uppercase leading-[0.95] mb-2">
+            CHAMPIONSHIP FOOTBALL
+          </h1>
+          <h2 id="detail-event-quoted-title" class="font-mono text-sm sm:text-base tracking-[0.16em] text-white/85 uppercase mb-5">
+            'EL CLÁSICO NIGHTS'
+          </h2>
+
+          <!-- Editorial Description with Read More -->
+          <div class="text-sm leading-relaxed text-white/75 mb-6">
+            <p id="detail-description"></p>
+            <button id="detail-read-more-btn" onclick="toggleDetailReadMore()" class="mt-1.5 font-mono text-[11px] uppercase tracking-wider text-white/90 underline hover:text-white">
+              Read more
+            </button>
+          </div>
+
+          <!-- Dynamic Price & Allocation Status -->
+          <div class="flex items-baseline gap-4 mb-2">
+            <span id="detail-price" class="font-sans text-3xl sm:text-4xl font-semibold text-white">₹4,500</span>
+            <span class="font-mono text-xs text-emerald-400 uppercase tracking-wider">● FACE-VALUE VERIFIED</span>
+          </div>
+
+          <div class="flex items-center gap-2 text-xs text-white/65 mb-6">
+            <span class="text-amber-400">✦</span>
+            <span id="detail-edition-note">Limited Allocation of 250 Passes · Instant NFC Wallet Entry</span>
+          </div>
+
+          <!-- Venue & Date Metadata Strip -->
+          <div class="grid grid-cols-2 gap-3 p-4 rounded-xl bg-white/[0.04] border border-white/10 mb-6">
+            <div>
+              <span class="block font-mono text-[10px] text-white/45 uppercase">STADIUM VENUE</span>
+              <span id="detail-venue" class="text-xs sm:text-sm font-medium text-white mt-0.5 block">Santiago Arena, Madrid</span>
+            </div>
+            <div>
+              <span class="block font-mono text-[10px] text-white/45 uppercase">DATE & GATES</span>
+              <span id="detail-date" class="text-xs sm:text-sm font-medium text-white mt-0.5 block">SAT · 20:00 LOCAL</span>
+            </div>
+          </div>
+
+          <!-- Ticket Tier Selector ("SELECT TIER") -->
+          <div class="mb-6">
+            <label class="block font-mono text-[10px] tracking-[0.2em] text-white/55 uppercase mb-2.5">SELECT TIER</label>
+            <div id="tier-selector-grid" class="grid grid-cols-2 gap-2.5">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+
+          <!-- Primary CTA ("RESERVE PASS") & Bookmark Row -->
+          <div class="flex items-center gap-3 mb-8">
+            <button id="reserve-pass-btn" onclick="addCurrentEventToBag()" class="flex-1 py-3.5 px-6 rounded-full bg-[#f2f3f7] hover:bg-white text-[#0d0e17] font-mono text-xs font-bold tracking-[0.22em] uppercase transition-all shadow-xl active:scale-[0.99]">
+              RESERVE PASS
+            </button>
+            <button id="detail-save-btn" onclick="toggleSaveCurrentEvent()" class="p-3.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white transition-colors" title="Save Event">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Expandable ShutaBug Accordions -->
+          <div class="border-t border-white/15 divide-y divide-white/15 text-xs">
+            <details class="py-3.5 group" open>
+              <summary class="flex items-center justify-between cursor-pointer font-mono uppercase tracking-wider text-white/85 list-none">
+                <span>Gate Entry & NFC Verification</span>
+                <span class="text-white/50 group-open:rotate-45 transition-transform">+</span>
+              </summary>
+              <p class="mt-2.5 text-white/60 leading-relaxed">
+                Gates open 2 hours prior to kickoff/lights-out. Your rotating dynamic QR & Apple/Google Wallet NFC pass activates automatically inside the stadium perimeter.
+              </p>
+            </details>
+            <details class="py-3.5 group">
+              <summary class="flex items-center justify-between cursor-pointer font-mono uppercase tracking-wider text-white/85 list-none">
+                <span>FairPass Price-Lock Guarantee</span>
+                <span class="text-white/50 group-open:rotate-45 transition-transform">+</span>
+              </summary>
+              <p class="mt-2.5 text-white/60 leading-relaxed">
+                100% face-value verified inventory directly from stadium box offices. Zero dynamic surge pricing and capped face-value fan-to-fan resale.
+              </p>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- 6. CTRL+K INSTANT SEARCH MODAL                                        -->
+  <!-- ===================================================================== -->
+  <div id="search-modal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-start justify-center pt-20 px-4">
+    <div class="w-full max-w-xl bg-[#11131f] border border-white/20 rounded-2xl shadow-2xl overflow-hidden">
+      <div class="flex items-center gap-3 px-4 py-3.5 border-b border-white/10">
+        <svg class="w-4 h-4 text-white/50" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path>
+        </svg>
+        <input id="search-input" type="text" oninput="renderSearchResults(this.value)" placeholder="Search stadium events, cities, teams, circuits..."
+          class="w-full bg-transparent text-sm text-white placeholder-white/40 focus:outline-none" />
+        <button onclick="toggleSearchModal(false)" class="font-mono text-[10px] text-white/50 hover:text-white bg-white/10 px-2 py-1 rounded">ESC</button>
+      </div>
+      <div id="search-results" class="max-h-80 overflow-y-auto custom-scroll divide-y divide-white/10">
+        <!-- Populated dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 7. INDEX DIRECTORY MODAL                                              -->
+  <!-- ===================================================================== -->
+  <div id="index-modal" class="hidden fixed inset-0 z-50 bg-[#0d0e17]/95 backdrop-blur-xl overflow-y-auto custom-scroll p-6 sm:p-12">
+    <div class="max-w-5xl mx-auto">
+      <div class="flex items-center justify-between pb-6 border-b border-white/15 mb-8">
+        <div>
+          <span class="font-mono text-[10px] tracking-[0.25em] text-white/50 uppercase">360° STADIUM ARCHITECTURE MAP</span>
+          <h2 class="font-display text-3xl sm:text-5xl text-white uppercase mt-1">FAIRPASS STADIUM INDEX</h2>
+        </div>
+        <button onclick="toggleIndexModal(false)" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white">✕</button>
+      </div>
+
+      <div id="index-collections-grid" class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <!-- Populated dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 8. TICKET BAG SLIDE-OVER DRAWER                                       -->
+  <!-- ===================================================================== -->
+  <div id="bag-drawer" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex justify-end">
+    <div class="w-full max-w-md bg-[#11131f] border-l border-white/15 h-full flex flex-col justify-between p-6 shadow-2xl">
+      <div>
+        <div class="flex items-center justify-between pb-4 border-b border-white/15">
+          <h3 class="font-display text-2xl tracking-wide uppercase">YOUR PASS BAG</h3>
+          <button onclick="toggleBagDrawer(false)" class="p-2 rounded-full hover:bg-white/10 text-white/70 hover:text-white">✕</button>
+        </div>
+        <div id="bag-items-list" class="mt-4 space-y-3 max-h-[60vh] overflow-y-auto custom-scroll pr-1">
+          <!-- Bag items -->
+        </div>
+      </div>
+
+      <div class="pt-4 border-t border-white/15">
+        <div class="flex items-center justify-between text-sm mb-4">
+          <span class="font-mono text-xs text-white/60 uppercase">TOTAL (FACE VALUE)</span>
+          <span id="bag-subtotal" class="font-sans text-xl font-semibold text-white">₹0</span>
+        </div>
+        <button onclick="checkoutBag()" class="w-full py-3.5 rounded-full bg-[#f2f3f7] hover:bg-white text-[#0d0e17] font-mono text-xs font-bold tracking-[0.2em] uppercase transition-all">
+          ISSUE DIGITAL NFC PASSES →
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 9. HELP / INFO / SAVED MODALS & TOAST NOTIFICATION                    -->
+  <!-- ===================================================================== -->
+  <div id="help-modal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-[#11131f] border border-white/20 rounded-2xl p-6 shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-display text-2xl uppercase tracking-wide">STADIUM CONCOURSE GUIDE</h3>
+        <button onclick="toggleHelpModal(false)" class="text-white/60 hover:text-white">✕</button>
+      </div>
+      <ul class="space-y-3 text-xs text-white/75 leading-relaxed">
+        <li><strong class="text-white font-mono">CONTINUOUS JOURNEY:</strong> The camera glides automatically around the 360° curved stadium concourse. Move your pointer for subtle parallax look-around.</li>
+        <li><strong class="text-white font-mono">TWO-STEP APPROACH:</strong> Hover any mounted stadium display (<span class="text-emerald-400">COME CLOSER</span>), click once to glide directly in front of the bay, then click <span class="text-amber-300">OPEN THE PASS</span> to configure tickets.</li>
+        <li><strong class="text-white font-mono">GALLERY / LIST:</strong> Use the top-right pill switch to toggle between the 3D stadium concourse and the editorial event catalog.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="info-modal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="w-full max-w-lg bg-[#11131f] border border-white/20 rounded-2xl p-6 shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-display text-2xl uppercase tracking-wide">ABOUT FAIRPASS & ENTRY POLICIES</h3>
+        <button onclick="toggleInfoModal(false)" class="text-white/60 hover:text-white">✕</button>
+      </div>
+      <p class="text-xs text-white/75 leading-relaxed mb-3">
+        FAIRPASS reimagines live event discovery as an architectural 360° stadium exhibition. Every pass is issued at face value with cryptographic fan-ID binding to prevent automated scalping.
+      </p>
+      <p class="font-mono text-[11px] text-white/50">
+        Privacy · Terms of Admission · Anti-Scalp Guarantee · Support 24/7
+      </p>
+    </div>
+  </div>
+
+  <div id="saved-modal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-[#11131f] border border-white/20 rounded-2xl p-6 shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-display text-2xl uppercase tracking-wide">SAVED STADIUM EVENTS</h3>
+        <button onclick="toggleSavedModal(false)" class="text-white/60 hover:text-white">✕</button>
+      </div>
+      <div id="saved-list-container" class="space-y-2.5 max-h-72 overflow-y-auto custom-scroll"></div>
+    </div>
+  </div>
+
+  <section id="login-page" aria-hidden="true" aria-label="FAIRPASS sign in">
+    <button class="login-back" type="button" onclick="closeLoginPage()">← Back to gallery</button>
+    <button class="login-close" type="button" onclick="closeLoginPage()" aria-label="Close login">×</button>
+    <div class="login-shell">
+      <div class="login-intro">
+        <div class="login-eyebrow"><i class="login-live-dot"></i> YOUR SEAT IN THE MOMENT</div>
+        <h1>ONE PASS.<br><span>EVERY MOMENT.</span></h1>
+        <p>Sign in to discover live events, secure verified tickets, and step into the stadium experience.</p>
+        <div class="login-eventline">360° Stadium access · Face-value verified</div>
+      </div>
+      <div class="login-card">
+        <div class="login-kicker">FAIRPASS ACCOUNT / 01</div>
+        <h2 id="login-title">WELCOME BACK</h2>
+        <p id="login-subtitle" class="login-sub">Sign in to continue to your fan account.</p>
+        <form id="fairpass-login-form" onsubmit="submitLoginPage(event)">
+          <div id="login-name-field" class="login-field hidden"><label for="fp-login-name">Full name</label><div class="login-inputbox"><input id="fp-login-name" type="text" placeholder="Your name" autocomplete="name"></div></div>
+          <div class="login-field"><label for="fp-login-email">Email address</label><div class="login-inputbox"><input id="fp-login-email" type="email" placeholder="you@example.com" autocomplete="email" required></div></div>
+          <div class="login-field"><label for="fp-login-password">Password</label><div class="login-inputbox"><input id="fp-login-password" type="password" placeholder="Enter your password" autocomplete="current-password" required minlength="12"><button class="login-showpass" type="button" id="fp-show-password">SHOW</button></div></div>
+          <div id="login-options" class="login-options"><label class="login-remember"><input id="fp-remember" type="checkbox"> Remember me</label><a class="login-link" href="#forgot" id="fp-forgot" onclick="event.preventDefault(); fairpassLoginNotice('Password recovery is not configured yet.')">Forgot password?</a></div>
+          <button id="fp-login-submit" class="login-submit" type="submit">SIGN IN <span>→</span></button>
+        </form>
+        <div class="login-divider">OR CONTINUE WITH</div>
+        <div class="login-social"><button type="button" onclick="fairpassLoginNotice('Google sign-in is not configured yet.')">◎ &nbsp; Google</button><button type="button" onclick="fairpassLoginNotice('Apple sign-in is not configured yet.')">● &nbsp; Apple</button></div>
+        <p class="login-signup"><span id="login-signup-copy">New to FAIRPASS?</span> <a class="login-link" href="#create" id="fp-create-account" onclick="toggleLoginMode(event)">Create an account</a></p>
+        <div class="login-security">● &nbsp; Secure access · Verified fan identity</div>
+      </div>
+    </div>
+  </section>
+  <div id="login-toast" role="status" aria-live="polite"></div>
+
+  <div id="account-modal" class="hidden fixed inset-0 z-[60] bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-[#11131f] border border-white/20 rounded-2xl p-6 shadow-2xl">
+      <div class="flex items-center justify-between mb-5">
+        <div><p class="font-mono text-[10px] tracking-[0.2em] text-white/45">FAIRPASS ACCOUNT</p><h3 id="account-heading" class="font-display text-2xl uppercase tracking-wide">SIGN IN</h3></div>
+        <button onclick="toggleAccountModal(false)" class="text-white/60 hover:text-white">✕</button>
+      </div>
+      <div id="account-session" class="hidden text-sm text-white/75 mb-4"></div>
+      <button id="account-tickets-button" onclick="loadMyTickets()" class="hidden text-xs underline text-amber-200 mb-3">View my tickets</button>
+      <div id="account-tickets-list" class="hidden max-h-48 overflow-y-auto custom-scroll space-y-2 mb-3"></div>
+      <form id="account-form" class="space-y-3" onsubmit="submitAccountForm(event)">
+        <label id="account-name-wrap" class="hidden block"><span class="font-mono text-[10px] text-white/50">NAME</span><input id="account-name" autocomplete="name" class="mt-1 w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2 text-white" /></label>
+        <label class="block"><span class="font-mono text-[10px] text-white/50">EMAIL</span><input id="account-email" type="email" required autocomplete="email" class="mt-1 w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2 text-white" /></label>
+        <label class="block"><span class="font-mono text-[10px] text-white/50">PASSWORD</span><input id="account-password" type="password" required minlength="12" autocomplete="current-password" class="mt-1 w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2 text-white" /></label>
+        <button id="account-submit" class="w-full py-3 rounded-full bg-[#f2f3f7] text-[#0d0e17] font-mono text-xs font-bold tracking-widest">SIGN IN</button>
+      </form>
+      <div class="flex justify-between mt-4 text-xs text-white/55"><button id="account-mode-toggle" onclick="toggleAccountMode()" class="underline">Create an account</button><button id="account-logout" onclick="logoutAccount()" class="hidden underline">Sign out</button></div>
+    </div>
+  </div>
+
+  <!-- Custom Non-Blocking Toast Banner -->
+  <div id="toast-banner" class="fixed top-20 left-1/2 -translate-x-1/2 z-[80] px-4 py-2 rounded-full bg-[#f2f3f7] text-[#0d0e17] font-mono text-xs font-semibold shadow-2xl opacity-0 pointer-events-none transition-all duration-300 -translate-y-2">
+    Notification
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- APPLICATION LOGIC & THREE.JS 360° STADIUM ENGINE                      -->
+  <!-- ===================================================================== -->
+  <script>
+    // =========================================================================
+    // 1. CURRENCY & CURATED STADIUM COLLECTIONS (16 EVENTS ACROSS 4 SECTORS)
+    // =========================================================================
+    const CURRENCY_RATES = {
+      INR: { symbol: '₹', rate: 84, decimals: 0 },
+      USD: { symbol: '$', rate: 1, decimals: 2 },
+      EUR: { symbol: '€', rate: 0.92, decimals: 2 },
+      GBP: { symbol: '£', rate: 0.79, decimals: 2 }
+    };
+
+    let currentCurrency = 'INR';
+    const API_BASE = '';
+    let accessToken = sessionStorage.getItem('fairpass_access_token') || '';
+    let refreshToken = sessionStorage.getItem('fairpass_refresh_token') || '';
+    let accountMode = 'login';
+    let checkoutAfterAuth = false;
+
+    const COLLECTIONS = [
+      {
+        id: 'championship-football',
+        title: 'CHAMPIONSHIP FOOTBALL',
+        shortTag: '4 EVENTS',
+        category: 'FOOTBALL',
+        accent: '#3b82f6'
+      },
+      {
+        id: 'cricket-world-nights',
+        title: 'CRICKET WORLD NIGHTS',
+        shortTag: '4 EVENTS',
+        category: 'CRICKET',
+        accent: '#10b981'
+      },
+      {
+        id: 'formula-night-circuit',
+        title: 'FORMULA NIGHT CIRCUIT',
+        shortTag: '4 EVENTS',
+        category: 'FORMULA',
+        accent: '#f59e0b'
+      },
+      {
+        id: 'stadium-world-tour',
+        title: 'STADIUM WORLD TOUR',
+        shortTag: '4 EVENTS',
+        category: 'CONCERTS',
+        accent: '#ec4899'
+      }
+    ];
+
+    const DEMO_EVENTS = [
+      // Sector 01: CHAMPIONSHIP FOOTBALL
+      {
+        id: 'ev-01',
+        collectionIdx: 0,
+        collection: 'CHAMPIONSHIP FOOTBALL',
+        title: 'El Clásico Nights',
+        subtitle: 'CHAMPIONSHIP RIVALRY SHOWDOWN',
+        venue: 'Santiago Arena, Madrid',
+        date: 'SAT 14 NOV · 21:00 CET',
+        basePrice: 55,
+        palette: ['#0f172a', '#2563eb', '#93c5fd', '#f8fafc'],
+        artStyle: 'pitch-floodlights',
+        description: 'Football’s fiercest rivalry under towering Iberian floodlights. Ninety minutes of knockout drama with 85,000 voices echoing around the bowl and verified face-value pitchside sightlines.',
+        extendedDescription: 'Includes express NFC concourse lane access, official matchday digital program, and guaranteed unobstructed lower-bowl or panoramic upper-tier seating.'
+      },
+      {
+        id: 'ev-02',
+        collectionIdx: 0,
+        collection: 'CHAMPIONSHIP FOOTBALL',
+        title: 'Wembley Floodlight Final',
+        subtitle: 'CONTINENTAL CUP DECIDER',
+        venue: 'Wembley National Bowl, London',
+        date: 'SUN 22 NOV · 20:00 GMT',
+        basePrice: 85,
+        palette: ['#1e1b4b', '#dc2626', '#fbbf24', '#ffffff'],
+        artStyle: 'derby-stripes',
+        description: 'Two European titans collide beneath the iconic Wembley arch. Full-stadium tifo choreography, pyrotechnic walkouts, and world-class football captured from prime stadium angles.',
+        extendedDescription: 'Every FairPass admission is cryptographically bound to your verified fan profile, eliminating scalper markups.'
+      },
+      {
+        id: 'ev-03',
+        collectionIdx: 0,
+        collection: 'CHAMPIONSHIP FOOTBALL',
+        title: 'San Siro Derby Della Madonnina',
+        subtitle: 'MILAN NIGHT LEG · QUARTERFINAL',
+        venue: 'San Siro Bowl, Milan',
+        date: 'WED 02 DEC · 20:45 CET',
+        basePrice: 70,
+        palette: ['#064e3b', '#10b981', '#fef08a', '#ecfdf5'],
+        artStyle: 'stadium-crest',
+        description: 'Curva Nord meets Curva Sud in one of world sport’s most electric concrete cathedrals. Experience the spiral towers and roaring night atmosphere firsthand.',
+        extendedDescription: 'Gates open 150 minutes before kickoff with live pre-match stadium bowl projections.'
+      },
+      {
+        id: 'ev-04',
+        collectionIdx: 0,
+        collection: 'CHAMPIONSHIP FOOTBALL',
+        title: 'Munich Allianz European Night',
+        subtitle: 'KNOCKOUT STAGE · SECOND LEG',
+        venue: 'Allianz Arena, Munich',
+        date: 'TUE 15 DEC · 21:00 CET',
+        basePrice: 65,
+        palette: ['#090d16', '#f97316', '#38bdf8', '#f8fafc'],
+        artStyle: 'gridiron-neon',
+        description: 'Illuminated exterior cushions glow crimson against the Bavarian night sky as elite clubs battle for a place in the final four.',
+        extendedDescription: 'Direct S-Bahn transit integration included with every digital NFC pass.'
+      },
+
+      // Sector 02: CRICKET WORLD NIGHTS
+      {
+        id: 'ev-05',
+        collectionIdx: 1,
+        collection: 'CRICKET WORLD NIGHTS',
+        title: 'Mumbai Wankhede Super Over',
+        subtitle: 'T20 NIGHT CLASH BY THE ARABIAN SEA',
+        venue: 'Wankhede Stadium, Mumbai',
+        date: 'FRI 18 DEC · 19:30 IST',
+        basePrice: 48,
+        palette: ['#090a29', '#3b82f6', '#38bdf8', '#fde047'],
+        artStyle: 'cosmic-orbs',
+        description: 'Sea breeze, deafening decibels, and final-over fireworks under Mumbai’s iconic floodlight towers. Thousands of phone flashlights illuminate the stands between innings.',
+        extendedDescription: 'Includes dedicated North/Garware gate entry and real-time ball-tracking AR companion.'
+      },
+      {
+        id: 'ev-06',
+        collectionIdx: 1,
+        collection: 'CRICKET WORLD NIGHTS',
+        title: 'Ahmedabad 132K Bowl Final',
+        subtitle: 'WORLD CHAMPIONSHIP FINALE',
+        venue: 'Narendra Modi Stadium, Ahmedabad',
+        date: 'SUN 03 JAN · 19:00 IST',
+        basePrice: 60,
+        palette: ['#1e1b4b', '#8b5cf6', '#ec4899', '#ffffff'],
+        artStyle: 'era-prism',
+        description: 'Step inside the world’s largest cricket coliseum with 132,000 spectators creating a continuous 360-degree wall of sound and color.',
+        extendedDescription: 'Full 360° LED ring synchronization and halftime drone & laser spectacle.'
+      },
+      {
+        id: 'ev-07',
+        collectionIdx: 1,
+        collection: 'CRICKET WORLD NIGHTS',
+        title: 'MCG Boxing Day Twilight Test',
+        subtitle: 'MELBOURNE COLISEUM DAY-NIGHT',
+        venue: 'Melbourne Cricket Ground',
+        date: 'SAT 26 DEC · 14:30 AEDT',
+        basePrice: 52,
+        palette: ['#064e3b', '#14b8a6', '#a3e635', '#ffffff'],
+        artStyle: 'waveform-grid',
+        description: 'Pink-ball swing under twilight skies before 95,000 spectators in Melbourne’s historic amphitheater.',
+        extendedDescription: 'All-day concourse re-entry privileges and Great Southern Stand sightlines.'
+      },
+      {
+        id: 'ev-08',
+        collectionIdx: 1,
+        collection: 'CRICKET WORLD NIGHTS',
+        title: 'Lord’s Pavilion Sunset Final',
+        subtitle: 'HOME OF CRICKET · CHAMPIONSHIP',
+        venue: 'Lord’s Ground, London',
+        date: 'SUN 17 JAN · 18:00 GMT',
+        basePrice: 78,
+        palette: ['#1c1917', '#d97706', '#fef08a', '#ffffff'],
+        artStyle: 'ring-spotlight',
+        description: 'Tradition meets modern night-cricket intensity beneath the iconic Media Centre and illuminated Mound Stand.',
+        extendedDescription: 'Face-value verified allocation with complimentary commemorative scorecard.'
+      },
+
+      // Sector 03: FORMULA NIGHT CIRCUIT
+      {
+        id: 'ev-09',
+        collectionIdx: 2,
+        collection: 'FORMULA NIGHT CIRCUIT',
+        title: 'Marina Bay Midnight GP',
+        subtitle: 'FLOODLIT STREET CIRCUIT FINALE',
+        venue: 'Marina Bay Grandstand, Singapore',
+        date: 'SUN 24 JAN · 20:00 SGT',
+        basePrice: 120,
+        palette: ['#090c15', '#ef4444', '#facc15', '#38bdf8'],
+        artStyle: 'apex-circuit',
+        description: 'Titanium skid-blocks throw showers of sparks at 320 km/h beneath 1,600 custom trackside projectors along Singapore’s waterfront grandstands.',
+        extendedDescription: 'Includes post-race Padang main-stage concert access and pit-straight jumbotron view.'
+      },
+      {
+        id: 'ev-10',
+        collectionIdx: 2,
+        collection: 'FORMULA NIGHT CIRCUIT',
+        title: 'Yas Marina Twilight Finale',
+        subtitle: 'SEASON CHAMPIONSHIP DECIDER',
+        venue: 'Yas Marina Circuit, Abu Dhabi',
+        date: 'SUN 07 FEB · 17:00 GST',
+        basePrice: 140,
+        palette: ['#2e1065', '#f59e0b', '#ec4899', '#fef08a'],
+        artStyle: 'laser-fan',
+        description: 'Sunset fades into floodlit drama as the championship title is decided under fireworks overlooking the illuminated Yas Viceroy canopy.',
+        extendedDescription: 'Main Grandstand covered seating with giant pit-lane telemetry screens.'
+      },
+      {
+        id: 'ev-11',
+        collectionIdx: 2,
+        collection: 'FORMULA NIGHT CIRCUIT',
+        title: 'Las Vegas Strip Neon Circuit',
+        subtitle: 'HIGH-SPEED BOULEVARD NIGHT RACE',
+        venue: 'Las Vegas Street Circuit, Nevada',
+        date: 'SAT 20 FEB · 22:00 PST',
+        basePrice: 165,
+        palette: ['#090d16', '#06b6d4', '#f43f5e', '#f8fafc'],
+        artStyle: 'tokyo-cyber',
+        description: '350 km/h slipstream battles down the neon-lit Strip surrounded by towering grandstands and synchronized sphere visuals.',
+        extendedDescription: 'Includes heated concourse hospitality lounge and live team-radio audio feed.'
+      },
+      {
+        id: 'ev-12',
+        collectionIdx: 2,
+        collection: 'FORMULA NIGHT CIRCUIT',
+        title: 'Jeddah Corniche Floodlit Dash',
+        subtitle: 'FASTEST STREET CIRCUIT ON EARTH',
+        venue: 'Jeddah Corniche Circuit, Red Sea',
+        date: 'SUN 07 MAR · 20:00 AST',
+        basePrice: 110,
+        palette: ['#431407', '#ea580c', '#fbbf24', '#fed7aa'],
+        artStyle: 'desert-sun',
+        description: 'Twenty-seven sweeping high-speed corners along the Red Sea waterfront under dramatic architectural floodlights.',
+        extendedDescription: 'Main Straight Grandstand B passes with post-race firework finale.'
+      },
+
+      // Sector 04: STADIUM WORLD TOUR
+      {
+        id: 'ev-13',
+        collectionIdx: 3,
+        collection: 'STADIUM WORLD TOUR',
+        title: 'After Hours Til Dawn 360°',
+        subtitle: 'MONOLITHIC STADIUM SYNTHESIS TOUR',
+        venue: 'Stade de France, Paris',
+        date: 'FRI 19 MAR · 20:30 CET',
+        basePrice: 68,
+        palette: ['#18081c', '#e11d48', '#fb7185', '#fde047'],
+        artStyle: 'synth-skyline',
+        description: 'A monumental brutalist cityscape spanning the stadium floor, synced with 80,000 glowing crowd wristbands and towering laser beams.',
+        extendedDescription: 'Unobstructed 360° in-the-round sightlines from every stadium tier.'
+      },
+      {
+        id: 'ev-14',
+        collectionIdx: 3,
+        collection: 'STADIUM WORLD TOUR',
+        title: 'Music of the Spheres Live',
+        subtitle: 'BIOLUMINESCENT STADIUM EXPERIENCE',
+        venue: 'DY Patil Stadium, Mumbai',
+        date: 'SAT 03 APR · 19:30 IST',
+        basePrice: 54,
+        palette: ['#0c4a6e', '#0284c7', '#a3e635', '#ffffff'],
+        artStyle: 'tennis-court',
+        description: 'Confetti cannons, kinetic dancefloors, and an ocean of synchronized crowd lightbulbs illuminating the Mumbai stadium bowl.',
+        extendedDescription: 'Includes reusable LED Xyloband and express stadium concourse entry.'
+      },
+      {
+        id: 'ev-15',
+        collectionIdx: 3,
+        collection: 'STADIUM WORLD TOUR',
+        title: 'Renaissance Chrome Dome',
+        subtitle: 'HIGH-FASHION STADIUM PRODUCTION',
+        venue: 'Tottenham Hotspur Stadium, London',
+        date: 'THU 15 APR · 19:45 GMT',
+        basePrice: 82,
+        palette: ['#111827', '#94a3b8', '#e2e8f0', '#38bdf8'],
+        artStyle: 'chrome-disco',
+        description: 'Panoramic widescreen stage architecture, robotic choreography, and crystal-clear 360° stadium surround acoustics.',
+        extendedDescription: 'Club Tier and Lower Bowl face-value verified passes.'
+      },
+      {
+        id: 'ev-16',
+        collectionIdx: 3,
+        collection: 'STADIUM WORLD TOUR',
+        title: 'Tokyo Dome Cyber Symphony',
+        subtitle: 'AUDIOVISUAL ARENA FINALE',
+        venue: 'Tokyo Dome, Bunkyo',
+        date: 'SAT 01 MAY · 19:00 JST',
+        basePrice: 74,
+        palette: ['#1e1b4b', '#4f46e5', '#f97316', '#f8fafc'],
+        artStyle: 'track-lanes',
+        description: 'Precision visual engineering meets heavyweight live orchestration inside Tokyo’s iconic illuminated dome.',
+        extendedDescription: 'Includes digital commemorative artwork and priority gate entry.'
+      }
+    ];
+
+    let EVENTS = DEMO_EVENTS;
+    let activeTicketTypes = [];
+    const TICKET_TIERS = [
+      { id: 'tier-bowl', name: 'General Bowl', section: 'Sec 312 · Panoramic View', mult: 1.0, left: '68 passes left' },
+      { id: 'tier-club', name: 'Club Concourse', section: 'East Club · Row 14', mult: 1.5, left: '34 passes left' },
+      { id: 'tier-vip', name: 'Pitchside VIP', section: 'Front Row · Paddock Lounge', mult: 2.2, left: '14 passes left' },
+      { id: 'tier-suite', name: 'Skyline Suite', section: 'Suite 04 · All-Inclusive', mult: 3.1, left: '5 passes left' }
+    ];
+
+    function escapeHTML(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    }
+
+    async function apiRequest(path, options = {}, retryAuth = true) {
+      const headers = new Headers(options.headers || {});
+      if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+      if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+      let response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+      if (response.status === 401 && refreshToken && retryAuth && path !== '/v1/auth/refresh') {
+        const refreshed = await fetch(`${API_BASE}/v1/auth/refresh`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken })
+        });
+        if (refreshed.ok) {
+          const tokens = await refreshed.json();
+          saveTokens(tokens);
+          return apiRequest(path, options, false);
+        }
+        clearTokens();
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+      return payload;
+    }
+
+    function saveTokens(tokens) {
+      accessToken = tokens.access_token || '';
+      refreshToken = tokens.refresh_token || '';
+      sessionStorage.setItem('fairpass_access_token', accessToken);
+      sessionStorage.setItem('fairpass_refresh_token', refreshToken);
+    }
+
+    function clearTokens() {
+      accessToken = '';
+      refreshToken = '';
+      sessionStorage.removeItem('fairpass_access_token');
+      sessionStorage.removeItem('fairpass_refresh_token');
+    }
+
+    function categoryCollection(category) {
+      const c = String(category || '').toLowerCase();
+      if (/football|soccer/.test(c)) return 0;
+      if (/cricket/.test(c)) return 1;
+      if (/formula|race|motor|auto/.test(c)) return 2;
+      return 3;
+    }
+
+    function dateLabel(value) {
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? 'DATE TO BE ANNOUNCED' : d.toLocaleString(undefined, { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).toUpperCase();
+    }
+
+    function mapBackendEvent(row, index) {
+      const collectionIdx = categoryCollection(row.category);
+      const template = DEMO_EVENTS.find(ev => ev.collectionIdx === collectionIdx) || DEMO_EVENTS[index % DEMO_EVENTS.length];
+      const priceMinor = Number(row.base_price_minor || 0);
+      return {
+        ...template,
+        id: row.id,
+        apiEventId: row.id,
+        title: row.title,
+        subtitle: String(row.category || 'FAIRPASS EVENT').toUpperCase(),
+        collectionIdx,
+        collection: COLLECTIONS[collectionIdx].title,
+        category: row.category || '',
+        venue: row.venue || 'Venue to be announced',
+        date: dateLabel(row.starts_at),
+        description: row.description || 'Official event tickets, issued after verified payment.',
+        extendedDescription: `Scheduled until ${dateLabel(row.ends_at)}. Tickets are verified by FAIRPASS.`,
+        currency: row.currency || 'INR',
+        basePriceMinor: priceMinor,
+        basePrice: priceMinor / 100
+      };
+    }
+
+    async function loadPublishedEvents() {
+      try {
+        const rows = await apiRequest('/v1/events');
+        if (Array.isArray(rows) && rows.length) {
+          EVENTS = rows.slice(0, 16).map(mapBackendEvent);
+          COLLECTIONS.forEach((collection, idx) => {
+            collection.shortTag = `${EVENTS.filter(ev => ev.collectionIdx === idx).length} EVENTS`;
+          });
+          document.getElementById('currency-select').disabled = true;
+          document.getElementById('currency-select').title = 'Live ticket prices use the event currency';
+          selectedDetailEvent = EVENTS[0];
+          showToast(`Connected · showing ${EVENTS.length} live event${EVENTS.length === 1 ? '' : 's'}`);
+        } else {
+          EVENTS = DEMO_EVENTS;
+          selectedDetailEvent = EVENTS[0];
+          showToast('Backend connected · no published events yet');
+        }
+      } catch (error) {
+        EVENTS = DEMO_EVENTS;
+        selectedDetailEvent = EVENTS[0];
+        console.warn('FAIRPASS API unavailable; showing gallery preview.', error);
+      }
+    }
+
+    function formatEventPrice(ev, minor = null) {
+      if (!ev.apiEventId) return formatPrice(ev.basePrice);
+      if (minor === null && !Number(ev.basePriceMinor)) return 'TICKETS SOON';
+      const currency = ev.currency || 'INR';
+      const amountMinor = minor === null ? ev.basePriceMinor : minor;
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(Number(amountMinor || 0) / 100);
+    }
+
+    let loginMode = 'login';
+    let loginToastTimer;
+    function openLoginPage() {
+      const page = document.getElementById('login-page');
+      page.classList.add('login-open');
+      page.setAttribute('aria-hidden', 'false');
+      document.body.style.overflow = 'hidden';
+      setTimeout(() => document.getElementById('fp-login-email')?.focus(), 250);
+    }
+
+    document.getElementById('fp-show-password').addEventListener('click', function () {
+      const field = document.getElementById('fp-login-password');
+      field.type = field.type === 'password' ? 'text' : 'password';
+      this.textContent = field.type === 'password' ? 'SHOW' : 'HIDE';
+    });
+
+    function closeLoginPage() {
+      const page = document.getElementById('login-page');
+      page.classList.remove('login-open');
+      page.setAttribute('aria-hidden', 'true');
+      document.body.style.overflow = '';
+    }
+
+    function fairpassLoginNotice(message) {
+      const toast = document.getElementById('login-toast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(loginToastTimer);
+      loginToastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
+    }
+
+    function toggleLoginMode(event) {
+      event.preventDefault();
+      loginMode = loginMode === 'login' ? 'register' : 'login';
+      const registering = loginMode === 'register';
+      document.getElementById('login-name-field').classList.toggle('hidden', !registering);
+      document.getElementById('fp-login-name').required = registering;
+      document.getElementById('login-title').textContent = registering ? 'CREATE ACCOUNT' : 'WELCOME BACK';
+      document.getElementById('login-subtitle').textContent = registering ? 'Create your FAIRPASS fan account.' : 'Sign in to continue to your fan account.';
+      document.getElementById('fp-login-submit').innerHTML = registering ? 'CREATE ACCOUNT <span>→</span>' : 'SIGN IN <span>→</span>';
+      document.getElementById('login-options').classList.toggle('hidden', registering);
+      document.getElementById('login-signup-copy').textContent = registering ? 'Already have an account?' : 'New to FAIRPASS?';
+      document.getElementById('fp-create-account').textContent = registering ? 'Sign in' : 'Create an account';
+      document.getElementById('fp-login-password').autocomplete = registering ? 'new-password' : 'current-password';
+    }
+
+    async function submitLoginPage(event) {
+      event.preventDefault();
+      const button = document.getElementById('fp-login-submit');
+      button.disabled = true;
+      button.textContent = loginMode === 'login' ? 'SIGNING IN…' : 'CREATING ACCOUNT…';
+      try {
+        const body = {
+          email: document.getElementById('fp-login-email').value.trim(),
+          password: document.getElementById('fp-login-password').value
+        };
+        let pair;
+        if (loginMode === 'register') {
+          body.name = document.getElementById('fp-login-name').value.trim();
+          body.role = 'attendee';
+          pair = await apiRequest('/v1/auth/register', { method: 'POST', body: JSON.stringify(body) }, false);
+        } else {
+          pair = await apiRequest('/v1/auth/login', { method: 'POST', body: JSON.stringify(body) }, false);
+        }
+        saveTokens(pair);
+        closeLoginPage();
+        fairpassLoginNotice('Signed in to FAIRPASS');
+        if (checkoutAfterAuth) {
+          checkoutAfterAuth = false;
+          checkoutBag();
+        }
+      } catch (error) {
+        fairpassLoginNotice(error.message || 'Could not sign in. Check your details and try again.');
+      } finally {
+        button.disabled = false;
+        button.innerHTML = loginMode === 'login' ? 'SIGN IN <span>→</span>' : 'CREATE ACCOUNT <span>→</span>';
+      }
+    }
+
+    async function toggleAccountModal(show) {
+      if (show && !accessToken) {
+        openLoginPage();
+        return;
+      }
+      const modal = document.getElementById('account-modal');
+      modal.classList.toggle('hidden', !show);
+      if (!show) return;
+      const session = document.getElementById('account-session');
+      const form = document.getElementById('account-form');
+      const loggedIn = Boolean(accessToken);
+      form.classList.toggle('hidden', loggedIn);
+      document.getElementById('account-mode-toggle').classList.toggle('hidden', loggedIn);
+      document.getElementById('account-logout').classList.toggle('hidden', !loggedIn);
+      document.getElementById('account-tickets-button').classList.toggle('hidden', !loggedIn);
+      document.getElementById('account-heading').textContent = loggedIn ? 'YOUR ACCOUNT' : accountMode === 'login' ? 'SIGN IN' : 'CREATE ACCOUNT';
+      session.classList.toggle('hidden', !loggedIn);
+      if (loggedIn) {
+        try {
+          const me = await apiRequest('/v1/me');
+          session.textContent = `Signed in as ${me.email}`;
+        } catch (error) {
+          session.textContent = 'Your session has expired. Sign in again.';
+          clearTokens();
+          document.getElementById('account-tickets-button').classList.add('hidden');
+          form.classList.remove('hidden');
+          document.getElementById('account-logout').classList.add('hidden');
+          document.getElementById('account-mode-toggle').classList.remove('hidden');
+          toggleAccountModal(false);
+          openLoginPage();
+        }
+      }
+    }
+
+    function toggleAccountMode() {
+      accountMode = accountMode === 'login' ? 'register' : 'login';
+      document.getElementById('account-name-wrap').classList.toggle('hidden', accountMode !== 'register');
+      document.getElementById('account-name').required = accountMode === 'register';
+      document.getElementById('account-password').autocomplete = accountMode === 'login' ? 'current-password' : 'new-password';
+      document.getElementById('account-heading').textContent = accountMode === 'login' ? 'SIGN IN' : 'CREATE ACCOUNT';
+      document.getElementById('account-submit').textContent = accountMode === 'login' ? 'SIGN IN' : 'CREATE ACCOUNT';
+      document.getElementById('account-mode-toggle').textContent = accountMode === 'login' ? 'Create an account' : 'Already registered? Sign in';
+    }
+
+    async function submitAccountForm(event) {
+      event.preventDefault();
+      const button = document.getElementById('account-submit');
+      button.disabled = true;
+      try {
+        const body = { email: document.getElementById('account-email').value.trim(), password: document.getElementById('account-password').value };
+        let tokens;
+        if (accountMode === 'register') {
+          body.name = document.getElementById('account-name').value.trim();
+          body.role = 'attendee';
+          tokens = await apiRequest('/v1/auth/register', { method: 'POST', body: JSON.stringify(body) }, false);
+        } else {
+          tokens = await apiRequest('/v1/auth/login', { method: 'POST', body: JSON.stringify(body) }, false);
+        }
+        saveTokens(tokens);
+        showToast('Signed in to FAIRPASS');
+        toggleAccountModal(false);
+        if (checkoutAfterAuth) {
+          checkoutAfterAuth = false;
+          checkoutBag();
+        }
+      } catch (error) {
+        showToast(error.message || 'Sign in failed');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function logoutAccount() {
+      try { await apiRequest('/v1/auth/logout', { method: 'POST', body: '{}' }, false); } catch (_) {}
+      clearTokens();
+      toggleAccountModal(false);
+      showToast('Signed out');
+    }
+
+    async function loadMyTickets() {
+      const container = document.getElementById('account-tickets-list');
+      container.classList.remove('hidden');
+      container.textContent = 'Loading tickets…';
+      try {
+        const tickets = await apiRequest('/v1/me/tickets');
+        if (!tickets.length) {
+          container.textContent = 'No tickets have been issued to this account yet.';
+          return;
+        }
+        container.innerHTML = tickets.map(ticket => `<div class="rounded-lg border border-white/10 bg-white/5 p-2.5 text-xs"><div class="flex justify-between gap-2"><strong>${escapeHTML(ticket.event_title)}</strong>${['active','transferred'].includes(ticket.status) ? `<button class="underline text-amber-200" onclick="showTicketQR('${ticket.id}')">Show QR</button>` : ''}</div><div class="text-white/55 mt-1">${escapeHTML(ticket.ticket_type)} · ${escapeHTML(ticket.status)}</div><div id="ticket-qr-${ticket.id}" class="mt-2"></div></div>`).join('');
+      } catch (error) {
+        container.textContent = error.message || 'Could not load tickets';
+      }
+    }
+
+    async function showTicketQR(ticketId) {
+      const target = document.getElementById(`ticket-qr-${ticketId}`);
+      target.textContent = 'Loading secure ticket…';
+      try {
+        const credential = await apiRequest(`/v1/me/tickets/${encodeURIComponent(ticketId)}/credential`);
+        if (!window.QRCode) {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+            script.onload = resolve;
+            script.onerror = () => reject(new Error('QR rendering is unavailable'));
+            document.head.appendChild(script);
+          });
+        }
+        target.replaceChildren();
+        new window.QRCode(target, { text: credential.qr_token, width: 180, height: 180, colorDark: '#0d0e17', colorLight: '#ffffff', correctLevel: window.QRCode.CorrectLevel.M });
+        target.setAttribute('aria-label', 'Private ticket entry QR code');
+      } catch (error) {
+        target.textContent = error.message || 'Could not load ticket QR';
+      }
+    }
+
+    // =========================================================================
+    // 2. APPLICATION STATE
+    // =========================================================================
+    let currentMode = 'gallery'; // 'gallery' | 'list'
+    let activeListFilter = 'ALL';
+    let selectedDetailEvent = EVENTS[0];
+    let selectedTierIndex = 0;
+    let detailExpanded = false;
+    let savedEventIds = new Set(['ev-01', 'ev-05']);
+    let cartBag = [];
+    let stadiumMoodBright = false;
+
+    // 3D Camera Spline Travel & Spatial Approach State
+    // Camera physically travels along a circular path (radius = CAMERA_TRACK_RADIUS)
+    // inside the massive stadium concourse ring (radius = GALLERY_WALL_RADIUS)
+    let splineProgress = 0; // Continuous forward travel parameter [0 .. 2*PI)
+    const AUTO_TRAVEL_SPEED = 0.042; // Gentle continuous ShutaBug-style forward glide
+    let isApproachingBay = false;
+    let targetBayIndex = -1;
+    let approachBlend = 0; // 0 = traveling along concourse spline, 1 = framed in front of display bay
+    let hoveredEventIndex = -1;
+    let activeCollectionIndex = 0;
+
+    // Subtle mouse-parallax look offset (no drag required)
+    let pointerNormX = 0;
+    let pointerNormY = 0;
+    let smoothLookX = 0;
+    let smoothLookY = 0;
+
+    // Upright Poster Texture Data URLs cache (for List & Detail Views)
+    const posterDataUrls = {};
+
+    // =========================================================================
+    // 3. UPRIGHT HIGH-RES EVENT POSTER & WALL DECAL GENERATOR (CANVAS 2D)
+    // =========================================================================
+    function createEventArtworkCanvas(ev, index) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 768;
+      canvas.height = 960;
+      const ctx = canvas.getContext('2d');
+      const [cBg, cPrimary, cSecondary, cLight] = ev.palette;
+
+      // Rich Background Gradient
+      const bgGrad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      bgGrad.addColorStop(0, cBg);
+      bgGrad.addColorStop(0.55, shadeColor(cBg, 18));
+      bgGrad.addColorStop(1, cPrimary);
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Subtle Architectural Grid Texture
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < canvas.width; x += 32) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y < canvas.height; y += 32) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+
+      // Stylized Editorial Stadium Illustration per Event Style
+      ctx.save();
+      if (ev.artStyle === 'pitch-floodlights' || ev.artStyle === 'stadium-crest') {
+        for (let b = 0; b < 5; b++) {
+          const beam = ctx.createRadialGradient(140 + b * 120, 120, 10, 384, 520, 520);
+          beam.addColorStop(0, 'rgba(255,255,255,0.45)');
+          beam.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx.fillStyle = beam;
+          ctx.beginPath();
+          ctx.moveTo(140 + b * 120, 120);
+          ctx.lineTo(40 + b * 140, 680);
+          ctx.lineTo(260 + b * 140, 680);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.strokeStyle = cLight;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(110, 420, 548, 300);
+        ctx.beginPath();
+        ctx.arc(384, 570, 75, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (ev.artStyle === 'synth-skyline' || ev.artStyle === 'tokyo-cyber') {
+        const sunGrad = ctx.createRadialGradient(384, 340, 20, 384, 340, 230);
+        sunGrad.addColorStop(0, cSecondary);
+        sunGrad.addColorStop(1, 'rgba(225,29,72,0)');
+        ctx.fillStyle = sunGrad;
+        ctx.beginPath();
+        ctx.arc(384, 340, 230, 0, Math.PI * 2);
+        ctx.fill();
+
+        for (let i = 0; i < 11; i++) {
+          const bw = 46;
+          const bh = 160 + ((i * 73) % 240);
+          const bx = 95 + i * 54;
+          const by = 690 - bh;
+          ctx.fillStyle = i % 2 === 0 ? '#090b12' : '#151929';
+          ctx.fillRect(bx, by, bw, bh);
+          ctx.fillStyle = cSecondary;
+          for (let wy = by + 16; wy < 670; wy += 22) {
+            ctx.fillRect(bx + 10, wy, 8, 8);
+            ctx.fillRect(bx + 26, wy, 8, 8);
+          }
+        }
+      } else if (ev.artStyle === 'cosmic-orbs' || ev.artStyle === 'chrome-disco' || ev.artStyle === 'era-prism') {
+        for (let r = 240; r >= 40; r -= 40) {
+          ctx.strokeStyle = r % 80 === 0 ? cSecondary : cLight;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(384, 410, r, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        for (let s = 0; s < 140; s++) {
+          const sx = 80 + ((s * 97) % 608);
+          const sy = 150 + ((s * 131) % 540);
+          ctx.fillStyle = s % 3 === 0 ? cSecondary : '#ffffff';
+          ctx.beginPath();
+          ctx.arc(sx, sy, (s % 4) + 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else {
+        ctx.lineWidth = 18;
+        for (let c = 0; c < 6; c++) {
+          ctx.strokeStyle = c % 2 === 0 ? cSecondary : cLight;
+          ctx.beginPath();
+          ctx.arc(384, 520, 120 + c * 38, Math.PI, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+
+      // Top Editorial Metadata Header inside Poster
+      ctx.fillStyle = 'rgba(255,255,255,0.88)';
+      ctx.font = '700 18px "Space Mono", monospace';
+      ctx.fillText(`FAIRPASS // ${String(index + 1).padStart(2, '0')}`, 54, 68);
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = cSecondary;
+      ctx.fillText(ev.collection, canvas.width - 54, 68);
+      ctx.textAlign = 'left';
+
+      // Bottom Dark Gradient Scrim for Crisp Typography
+      const botGrad = ctx.createLinearGradient(0, 560, 0, 960);
+      botGrad.addColorStop(0, 'rgba(13,14,23,0)');
+      botGrad.addColorStop(0.45, 'rgba(13,14,23,0.86)');
+      botGrad.addColorStop(1, 'rgba(13,14,23,0.98)');
+      ctx.fillStyle = botGrad;
+      ctx.fillRect(0, 560, canvas.width, 400);
+
+      // Large Condensed Display Title
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '400 72px "Anton", sans-serif';
+      const words = ev.title.toUpperCase().split(' ');
+      const line1 = words.slice(0, Math.ceil(words.length / 2)).join(' ');
+      const line2 = words.slice(Math.ceil(words.length / 2)).join(' ');
+      ctx.fillText(line1, 54, 775);
+      if (line2) ctx.fillText(line2, 54, 850);
+
+      // Subtitle & Venue Strip
+      ctx.fillStyle = cSecondary;
+      ctx.font = '700 18px "Space Mono", monospace';
+      ctx.fillText(ev.subtitle, 54, 892);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.72)';
+      ctx.font = '400 17px "Inter", sans-serif';
+      ctx.fillText(`${ev.venue}  •  ${ev.date}`, 54, 924);
+
+      // Subtle Inner Border Frame
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(24, 24, canvas.width - 48, canvas.height - 48);
+
+      posterDataUrls[ev.id] = canvas.toDataURL('image/jpeg', 0.9);
+      return canvas;
+    }
+
+    function createWallDecalCanvas(collection) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 512;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, 512, 512);
+
+      ctx.fillStyle = '#0d0e17';
+      ctx.font = '400 54px "Anton", sans-serif';
+      const parts = collection.title.split(' ');
+      parts.forEach((word, idx) => {
+        ctx.fillText(word, 36, 175 + idx * 58);
+      });
+
+      ctx.fillStyle = '#475569';
+      ctx.font = '700 16px "Space Mono", monospace';
+      ctx.fillText(`${collection.shortTag}  //  VERIFIED`, 38, 175 + parts.length * 58 + 18);
+
+      ctx.fillStyle = collection.accent;
+      ctx.fillRect(38, 112, 44, 5);
+
+      return canvas;
+    }
+
+    function createCaptionPlateCanvas(ev) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 160;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, 640, 160);
+
+      // Crisp gallery caption plate beneath each mounted stadium screen
+      ctx.fillStyle = '#0d0e17';
+      ctx.font = '700 26px "Inter", sans-serif';
+      ctx.fillText(ev.title, 12, 44);
+
+      ctx.fillStyle = '#475569';
+      ctx.font = '600 18px "Space Mono", monospace';
+      ctx.fillText(`${ev.venue.split(',')[0]} · ${ev.collection}`, 12, 82);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '700 18px "Space Mono", monospace';
+      ctx.fillText(`${ev.date}  |  ${formatEventPrice(ev)}`, 12, 118);
+
+      return canvas;
+    }
+
+    /**
+     * Generates a high-resolution upright 360° panoramic stadium audience & bowl texture
+     * with real multi-tiered stadium grandstands, roof trusses, floodlight banks,
+     * thousands of spectators, illuminated smartphone lights, and giant jumbotron screens.
+     * Rendered upright so flipY = true maps top-of-stadium to +Y and bowl tiers below.
+     */
+    function createPanoramicStadiumAudienceCanvas() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 4096;
+      canvas.height = 1024;
+      const ctx = canvas.getContext('2d');
+
+      // 1. Deep night sky & stadium roof canopy gradient (Top = +Y)
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, 1024);
+      skyGrad.addColorStop(0.0, '#04060d');
+      skyGrad.addColorStop(0.22, '#090d1c');
+      skyGrad.addColorStop(0.55, '#11182d');
+      skyGrad.addColorStop(0.85, '#18223d');
+      skyGrad.addColorStop(1.0, '#0d1324');
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, 4096, 1024);
+
+      // 2. Architectural Steel Roof Ring & Floodlight Trusses along Upper Rim (y: 60..220)
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, 110);
+      ctx.lineTo(4096, 110);
+      ctx.moveTo(0, 175);
+      ctx.lineTo(4096, 175);
+      ctx.stroke();
+
+      for (let x = 0; x < 4096; x += 64) {
+        ctx.beginPath();
+        ctx.moveTo(x, 110);
+        ctx.lineTo(x + 32, 175);
+        ctx.lineTo(x + 64, 110);
+        ctx.stroke();
+      }
+
+      // 16 High-Intensity Stadium Floodlight Banks casting volumetric cones downward
+      for (let f = 0; f < 16; f++) {
+        const fx = f * 256 + 128;
+        const beamGrad = ctx.createRadialGradient(fx, 145, 8, fx, 460, 360);
+        beamGrad.addColorStop(0, 'rgba(224, 242, 254, 0.42)');
+        beamGrad.addColorStop(0.35, 'rgba(147, 197, 253, 0.12)');
+        beamGrad.addColorStop(1, 'rgba(147, 197, 253, 0)');
+        ctx.fillStyle = beamGrad;
+        ctx.beginPath();
+        ctx.moveTo(fx - 40, 145);
+        ctx.lineTo(fx - 220, 780);
+        ctx.lineTo(fx + 220, 780);
+        ctx.lineTo(fx + 40, 145);
+        ctx.closePath();
+        ctx.fill();
+
+        // Bright Floodlight Fixture Array
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(fx - 34, 130, 68, 22);
+      }
+
+      // 3. Multi-Tiered Stadium Grandstand Architecture (Upper Tier, Mid Ribbon, Lower Bowl)
+      // Tier dividers & concrete fascia bands
+      const tierBands = [260, 440, 620, 800];
+      tierBands.forEach((ty, idx) => {
+        ctx.fillStyle = idx % 2 === 0 ? '#1e293b' : '#0f172a';
+        ctx.fillRect(0, ty, 4096, 18);
+
+        // Glowing LED Perimeter Ribbon Board
+        ctx.fillStyle = idx === 1 ? 'rgba(56, 189, 248, 0.55)' : 'rgba(251, 191, 36, 0.35)';
+        ctx.fillRect(0, ty + 4, 4096, 5);
+      });
+
+      // 4. Giant Stadium Jumbotron Screens integrated into North, East, South, West stands
+      const jumbotrons = [256, 1280, 2304, 3328];
+      jumbotrons.forEach((jx, idx) => {
+        ctx.fillStyle = '#05070e';
+        ctx.fillRect(jx - 130, 290, 260, 130);
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(jx - 130, 290, 260, 130);
+
+        const screenGrad = ctx.createLinearGradient(jx - 120, 300, jx + 120, 410);
+        screenGrad.addColorStop(0, '#1d4ed8');
+        screenGrad.addColorStop(1, '#7c3aed');
+        ctx.fillStyle = screenGrad;
+        ctx.fillRect(jx - 122, 298, 244, 114);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '700 24px "Anton", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('FAIRPASS LIVE BOWL', jx, 350);
+        ctx.font = '600 14px "Space Mono", monospace';
+        ctx.fillStyle = '#fde047';
+        ctx.fillText(`SECTOR 0${idx + 1} · CAPACITY 92,400`, jx, 382);
+        ctx.textAlign = 'left';
+      });
+
+      // 5. Dense Real-Feel Stadium Audience Silhouettes & Illuminated Phone Lights
+      // Deterministic pseudo-random generator for crisp repeatable crowd density
+      let seed = 4219;
+      function rand() {
+        seed = (seed * 16807) % 2147483647;
+        return (seed - 1) / 2147483646;
+      }
+
+      // Draw tiered rows of spectators across y = 210 .. 980
+      for (let row = 0; row < 48; row++) {
+        const y = 215 + row * 16;
+        // Skip jumbotron zones slightly
+        const rowTone = row % 2 === 0 ? '#0b101d' : '#131b2e';
+        ctx.fillStyle = rowTone;
+        ctx.fillRect(0, y, 4096, 12);
+
+        const peopleInRow = 340;
+        for (let p = 0; p < peopleInRow; p++) {
+          const px = (p / peopleInRow) * 4096 + (rand() - 0.5) * 10;
+          const py = y + (rand() - 0.5) * 4;
+
+          // Spectator head & shoulders silhouette
+          const jerseyColors = ['#1e293b', '#334155', '#1d4ed8', '#be123c', '#f8fafc', '#0f766e', '#ca8a04'];
+          ctx.fillStyle = jerseyColors[Math.floor(rand() * jerseyColors.length)];
+          ctx.beginPath();
+          ctx.arc(px, py, 3.6, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Illuminated smartphone flashlights & concert wristbands held aloft
+          if (rand() > 0.86) {
+            const glowCol = rand() > 0.25 ? 'rgba(255, 255, 255, 0.95)' : 'rgba(253, 224, 71, 0.9)';
+            ctx.fillStyle = glowCol;
+            ctx.beginPath();
+            ctx.arc(px, py - 4, 2.2, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Soft halo around phone light
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+            ctx.beginPath();
+            ctx.arc(px, py - 4, 6.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      return canvas;
+    }
+
+    function shadeColor(hex, percent) {
+      const num = parseInt(hex.replace('#', ''), 16);
+      const amt = Math.round(2.55 * percent);
+      const R = Math.min(255, Math.max(0, (num >> 16) + amt));
+      const G = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amt));
+      const B = Math.min(255, Math.max(0, (num & 0x0000FF) + amt));
+      return '#' + (0x1000000 + R * 0x10000 + G * 0x100 + B).toString(16).slice(1);
+    }
+
+    // =========================================================================
+    // 4. THREE.JS 360° CURVED STADIUM CONCOURSE & SPLINE TRAVEL ENGINE
+    // =========================================================================
+    let scene, camera, renderer, raycaster, mouseNDC;
+    let posterMeshes = [];
+    let floodlightBeams = [];
+    let hemiLight, dirLight1;
+
+    // Spatial Dimensions:
+    // Camera travels physically along a circular concourse path of radius 16.5
+    // looking forward along the curved tangent toward the curved ivory exhibition
+    // monoliths mounted along radius 34.0, surrounded by the towering 360° stadium
+    // audience bowl at radius 68.0!
+    const CAMERA_SPLINE_RADIUS = 16.5;
+    const EXHIBITION_WALL_RADIUS = 34.0;
+    const STADIUM_BOWL_RADIUS = 72.0;
+    const WALL_HEIGHT = 11.4;
+
+    function initThreeEngine() {
+      const container = document.getElementById('webgl-container');
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color('#090b14');
+      scene.fog = new THREE.FogExp2('#090b14', 0.0052);
+
+      camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 320);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      container.appendChild(renderer.domElement);
+
+      raycaster = new THREE.Raycaster();
+      mouseNDC = new THREE.Vector2(-99, -99);
+
+      // 1. Architectural Museum-Stadium Lighting
+      hemiLight = new THREE.HemisphereLight('#ffffff', '#2a324b', 1.1);
+      hemiLight.position.set(0, 24, 0);
+      scene.add(hemiLight);
+
+      dirLight1 = new THREE.DirectionalLight('#f8fafc', 0.42);
+      dirLight1.position.set(18, 28, 18);
+      scene.add(dirLight1);
+
+      // 2. Curved Ivory-White Concourse Wall (#f2f3f7)
+      buildCurvedIvoryWall();
+
+      // 3. Smooth Reflective Slate-Indigo Concourse Floor + Inner Glowing Stadium Pitch
+      buildCurvedStadiumFloorAndPitch();
+
+      // 4. Real-Life 360° Panoramic Stadium Audience Bowl & Roof Floodlights (Upright!)
+      buildPanoramicStadiumBowl();
+
+      // 5. Mount 16 Curved Event Exhibition Bays + Collection Decals + Captions (Upright!)
+      mountCurvedEventExhibitionBays();
+
+      // 6. Bind Hover, Two-Step Approach Click, Parallax & Keyboard Controls
+      bindGalleryControls();
+
+      window.addEventListener('resize', onWindowResize);
+      animateLoop();
+    }
+
+    function buildCurvedIvoryWall() {
+      const wallCanvas = document.createElement('canvas');
+      wallCanvas.width = 2048;
+      wallCanvas.height = 512;
+      const wctx = wallCanvas.getContext('2d');
+
+      const wGrad = wctx.createLinearGradient(0, 0, 0, 512);
+      wGrad.addColorStop(0, '#e5e8f0');
+      wGrad.addColorStop(0.18, '#f2f3f7');
+      wGrad.addColorStop(0.85, '#edeff5');
+      wGrad.addColorStop(1, '#d7dce8');
+      wctx.fillStyle = wGrad;
+      wctx.fillRect(0, 0, 2048, 512);
+
+      // Architectural panel joints
+      wctx.strokeStyle = 'rgba(13, 14, 23, 0.06)';
+      wctx.lineWidth = 2;
+      for (let x = 0; x < 2048; x += 64) {
+        wctx.beginPath();
+        wctx.moveTo(x, 0);
+        wctx.lineTo(x, 512);
+        wctx.stroke();
+      }
+
+      const wallTex = new THREE.CanvasTexture(wallCanvas);
+      wallTex.flipY = true; // Verified upright
+      wallTex.wrapS = THREE.RepeatWrapping;
+      wallTex.repeat.set(6, 1);
+      wallTex.encoding = THREE.sRGBEncoding;
+
+      const cylGeo = new THREE.CylinderGeometry(EXHIBITION_WALL_RADIUS, EXHIBITION_WALL_RADIUS, WALL_HEIGHT, 180, 1, true);
+      const cylMat = new THREE.MeshStandardMaterial({
+        map: wallTex,
+        side: THREE.BackSide,
+        roughness: 0.86,
+        metalness: 0.02
+      });
+      const wallMesh = new THREE.Mesh(cylGeo, cylMat);
+      wallMesh.position.y = WALL_HEIGHT / 2 - 3.6;
+      scene.add(wallMesh);
+
+      // Top Architectural Coping Ring
+      const rimGeo = new THREE.RingGeometry(EXHIBITION_WALL_RADIUS - 0.15, EXHIBITION_WALL_RADIUS + 0.45, 180);
+      const rimMat = new THREE.MeshBasicMaterial({ color: '#cbd5e1', side: THREE.DoubleSide });
+      const topRim = new THREE.Mesh(rimGeo, rimMat);
+      topRim.rotation.x = Math.PI / 2;
+      topRim.position.y = WALL_HEIGHT - 3.58;
+      scene.add(topRim);
+    }
+
+    function buildCurvedStadiumFloorAndPitch() {
+      const floorCanvas = document.createElement('canvas');
+      floorCanvas.width = 1024;
+      floorCanvas.height = 1024;
+      const fctx = floorCanvas.getContext('2d');
+
+      const radGrad = fctx.createRadialGradient(512, 512, 40, 512, 512, 512);
+      radGrad.addColorStop(0, '#133a2b'); // Illuminated center stadium pitch hint
+      radGrad.addColorStop(0.24, '#242c44');
+      radGrad.addColorStop(0.58, '#323a56');
+      radGrad.addColorStop(0.88, '#23293e');
+      radGrad.addColorStop(1, '#161b2b');
+      fctx.fillStyle = radGrad;
+      fctx.fillRect(0, 0, 1024, 1024);
+
+      // Concentric concourse promenade walkways
+      fctx.strokeStyle = 'rgba(255,255,255,0.045)';
+      fctx.lineWidth = 2;
+      for (let r = 130; r < 500; r += 68) {
+        fctx.beginPath();
+        fctx.arc(512, 512, r, 0, Math.PI * 2);
+        fctx.stroke();
+      }
+
+      const floorTex = new THREE.CanvasTexture(floorCanvas);
+      floorTex.flipY = true;
+      floorTex.encoding = THREE.sRGBEncoding;
+
+      const floorGeo = new THREE.CircleGeometry(EXHIBITION_WALL_RADIUS + 0.15, 180);
+      const floorMat = new THREE.MeshStandardMaterial({
+        map: floorTex,
+        roughness: 0.4,
+        metalness: 0.16
+      });
+      const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+      floorMesh.rotation.x = -Math.PI / 2;
+      floorMesh.position.y = -3.6;
+      scene.add(floorMesh);
+    }
+
+    function buildPanoramicStadiumBowl() {
+      // High-resolution upright 360° panoramic stadium audience & grandstand texture
+      const stadiumCanvas = createPanoramicStadiumAudienceCanvas();
+      const stadiumTex = new THREE.CanvasTexture(stadiumCanvas);
+      stadiumTex.flipY = true; // CRITICAL: Ensures top of stadium stands & text are completely upright
+      stadiumTex.encoding = THREE.sRGBEncoding;
+      stadiumTex.anisotropy = 4;
+
+      const bowlHeight = 56;
+      const bowlGeo = new THREE.CylinderGeometry(STADIUM_BOWL_RADIUS, STADIUM_BOWL_RADIUS * 0.84, bowlHeight, 180, 1, true);
+      const bowlMat = new THREE.MeshBasicMaterial({
+        map: stadiumTex,
+        side: THREE.BackSide
+      });
+      const bowlMesh = new THREE.Mesh(bowlGeo, bowlMat);
+      bowlMesh.position.y = 26;
+      scene.add(bowlMesh);
+
+      // Upper Stadium Night Sky Dome Cap
+      const skyCapGeo = new THREE.CircleGeometry(STADIUM_BOWL_RADIUS + 2, 96);
+      const skyCapMat = new THREE.MeshBasicMaterial({ color: '#04060d', side: THREE.DoubleSide });
+      const skyCap = new THREE.Mesh(skyCapGeo, skyCapMat);
+      skyCap.rotation.x = Math.PI / 2;
+      skyCap.position.y = 53.8;
+      scene.add(skyCap);
+
+      // 8 Volumetric Stadium Floodlight Beams
+      const towerCount = 8;
+      for (let t = 0; t < towerCount; t++) {
+        const angle = (t / towerCount) * Math.PI * 2 + 0.2;
+        const r = STADIUM_BOWL_RADIUS - 6;
+        const tx = Math.sin(angle) * r;
+        const tz = -Math.cos(angle) * r;
+
+        const coneGeo = new THREE.ConeGeometry(16, 62, 24, 1, true);
+        const coneMat = new THREE.MeshBasicMaterial({
+          color: '#93c5fd',
+          transparent: true,
+          opacity: 0.04,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending
+        });
+        const cone = new THREE.Mesh(coneGeo, coneMat);
+        cone.position.set(tx * 0.72, 29, tz * 0.72);
+        cone.lookAt(0, 0, 0);
+        cone.rotateX(Math.PI / 2);
+        scene.add(cone);
+        floodlightBeams.push(cone);
+      }
+    }
+
+    function mountCurvedEventExhibitionBays() {
+      const slots = [];
+      COLLECTIONS.forEach((collection, colIdx) => {
+        slots.push({ kind: 'collection', collection, colIdx });
+        EVENTS.forEach((ev, eventIndex) => {
+          if (ev.collectionIdx === colIdx) slots.push({ kind: 'event', ev, eventIndex });
+        });
+      });
+      const totalSlots = slots.length;
+      const slotStep = (Math.PI * 2) / totalSlots;
+      const posterRadius = EXHIBITION_WALL_RADIUS - 0.16;
+
+      for (let slot = 0; slot < totalSlots; slot++) {
+        const angle = slot * slotStep;
+        const slotData = slots[slot];
+
+        if (slotData.kind === 'collection') {
+          // Collection Architectural Wall Decal mounted directly on curved ivory wall
+          const collection = slotData.collection;
+          const decalCanvas = createWallDecalCanvas(collection);
+          const decalTex = new THREE.CanvasTexture(decalCanvas);
+          decalTex.flipY = true; // Upright orientation verified
+          decalTex.encoding = THREE.sRGBEncoding;
+
+          const arcWidth = 0.15;
+          const decalGeo = new THREE.CylinderGeometry(
+            posterRadius, posterRadius, 5.2, 16, 1, true,
+            Math.PI - angle - arcWidth / 2, arcWidth
+          );
+          const decalMat = new THREE.MeshBasicMaterial({
+            map: decalTex,
+            transparent: true,
+            side: THREE.BackSide
+          });
+          const decalMesh = new THREE.Mesh(decalGeo, decalMat);
+          decalMesh.position.y = 1.65;
+          scene.add(decalMesh);
+        } else {
+          // Curved Event Display Bay mounted flush on the curved ivory wall
+          const ev = slotData.ev;
+          const eventIndex = slotData.eventIndex;
+          const artCanvas = createEventArtworkCanvas(ev, eventIndex);
+          const artTex = new THREE.CanvasTexture(artCanvas);
+          artTex.flipY = true; // Upright orientation verified
+          artTex.encoding = THREE.sRGBEncoding;
+          artTex.anisotropy = 4;
+
+          const posterArc = 0.165;
+          const posterHeight = 5.5;
+          const screenGeo = new THREE.CylinderGeometry(
+            posterRadius, posterRadius, posterHeight, 24, 1, true,
+            Math.PI - angle - posterArc / 2, posterArc
+          );
+          const screenMat = new THREE.MeshBasicMaterial({
+            map: artTex,
+            side: THREE.BackSide
+          });
+          const screenMesh = new THREE.Mesh(screenGeo, screenMat);
+          screenMesh.position.y = 1.85;
+          screenMesh.userData = {
+            eventIndex,
+            angle: angle,
+            eventData: ev
+          };
+          scene.add(screenMesh);
+          posterMeshes[eventIndex] = screenMesh;
+
+          // Architectural Shadow & Floor Reflection beneath each bay
+          const reflGeo = new THREE.PlaneGeometry(5.2, 4.2);
+          const reflMat = new THREE.MeshBasicMaterial({
+            color: ev.palette[1],
+            transparent: true,
+            opacity: 0.11,
+            depthWrite: false
+          });
+          const reflMesh = new THREE.Mesh(reflGeo, reflMat);
+          reflMesh.rotation.x = -Math.PI / 2;
+          reflMesh.rotation.z = -angle;
+          reflMesh.position.set(
+            Math.sin(angle) * (posterRadius - 2.4),
+            -3.58,
+            -Math.cos(angle) * (posterRadius - 2.4)
+          );
+          scene.add(reflMesh);
+
+          // Upright Caption Plate beneath the screen on the ivory wall
+          const capCanvas = createCaptionPlateCanvas(ev);
+          const capTex = new THREE.CanvasTexture(capCanvas);
+          capTex.flipY = true; // Upright orientation verified
+          capTex.encoding = THREE.sRGBEncoding;
+
+          const capGeo = new THREE.CylinderGeometry(
+            posterRadius, posterRadius, 1.35, 16, 1, true,
+            Math.PI - angle - posterArc / 2, posterArc
+          );
+          const capMat = new THREE.MeshBasicMaterial({
+            map: capTex,
+            transparent: true,
+            side: THREE.BackSide
+          });
+          const capMesh = new THREE.Mesh(capGeo, capMat);
+          capMesh.position.y = -1.72;
+          scene.add(capMesh);
+
+        }
+      }
+    }
+
+    // =========================================================================
+    // 5. CAMERA CHOREOGRAPHY, TWO-STEP APPROACH & RAYCASTING
+    // =========================================================================
+    function bindGalleryControls() {
+      const container = document.getElementById('webgl-container');
+
+      // Pointer move for subtle parallax look-around & custom cursor pill tracking
+      window.addEventListener('mousemove', (e) => {
+        const cursorEl = document.getElementById('custom-cursor');
+        cursorEl.style.left = `${e.clientX}px`;
+        cursorEl.style.top = `${e.clientY}px`;
+
+        pointerNormX = (e.clientX / window.innerWidth) * 2 - 1;
+        pointerNormY = -(e.clientY / window.innerHeight) * 2 + 1;
+
+        if (currentMode !== 'gallery') {
+          cursorEl.classList.remove('visible');
+          return;
+        }
+
+        mouseNDC.x = pointerNormX;
+        mouseNDC.y = pointerNormY;
+      });
+
+      // Gentle wheel nudge advances or eases position along the curved spline
+      window.addEventListener('wheel', (e) => {
+        if (currentMode !== 'gallery' || isAnyModalOpen()) return;
+        const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        splineProgress += delta * 0.00045;
+        if (isApproachingBay && Math.abs(delta) > 12) {
+          resumeConcourseTravel();
+        }
+      }, { passive: true });
+
+      // Two-Step Spatial Click Interaction ("COME CLOSER" -> "OPEN THE PASS")
+      container.addEventListener('click', () => {
+        if (currentMode !== 'gallery' || isAnyModalOpen()) return;
+
+        if (hoveredEventIndex !== -1) {
+          // Stage 2: Already framed in front of this bay -> Open full Event & Ticket Detail Page
+          if (isApproachingBay && targetBayIndex === hoveredEventIndex && approachBlend > 0.72) {
+            openEventDetail(EVENTS[hoveredEventIndex]);
+            return;
+          }
+
+          // Stage 1: Glide camera smoothly off the spline directly in front of this stadium bay
+          targetBayIndex = hoveredEventIndex;
+          isApproachingBay = true;
+          updateZoomUI(true);
+        } else if (isApproachingBay) {
+          resumeConcourseTravel();
+        }
+      });
+
+      // Touch tap support for mobile devices
+      container.addEventListener('touchend', (e) => {
+        if (currentMode !== 'gallery' || isAnyModalOpen() || e.changedTouches.length === 0) return;
+        const touch = e.changedTouches[0];
+        mouseNDC.x = (touch.clientX / window.innerWidth) * 2 - 1;
+        mouseNDC.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+        performRaycast();
+        if (hoveredEventIndex !== -1) {
+          if (isApproachingBay && targetBayIndex === hoveredEventIndex && approachBlend > 0.72) {
+            openEventDetail(EVENTS[hoveredEventIndex]);
+          } else {
+            targetBayIndex = hoveredEventIndex;
+            isApproachingBay = true;
+            updateZoomUI(true);
+          }
+        }
+      }, { passive: true });
+
+      // Ctrl+K / Cmd+K Search & Escape shortcuts
+      window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          toggleSearchModal(true);
+          return;
+        }
+        if (e.key === 'Escape') {
+          toggleSearchModal(false);
+          toggleIndexModal(false);
+          toggleBagDrawer(false);
+          toggleHelpModal(false);
+          toggleInfoModal(false);
+          toggleSavedModal(false);
+          toggleAccountModal(false);
+          closeLoginPage();
+          if (isApproachingBay) resumeConcourseTravel();
+        }
+      });
+    }
+
+    function resumeConcourseTravel() {
+      isApproachingBay = false;
+      targetBayIndex = -1;
+      updateZoomUI(false);
+    }
+
+    function updateZoomUI(isFocused) {
+      const zoomCtrl = document.getElementById('zoom-controls');
+      if (isFocused) {
+        zoomCtrl.classList.remove('opacity-0', '-translate-y-2');
+        zoomCtrl.classList.add('opacity-100', 'translate-y-0');
+      } else {
+        zoomCtrl.classList.add('opacity-0', '-translate-y-2');
+        zoomCtrl.classList.remove('opacity-100', 'translate-y-0');
+      }
+    }
+
+    function openZoomedEventDetail() {
+      if (targetBayIndex >= 0 && EVENTS[targetBayIndex]) {
+        openEventDetail(EVENTS[targetBayIndex]);
+      }
+    }
+
+    function performRaycast() {
+      if (currentMode !== 'gallery' || isAnyModalOpen()) {
+        hoveredEventIndex = -1;
+        return;
+      }
+
+      raycaster.setFromCamera(mouseNDC, camera);
+      const intersects = raycaster.intersectObjects(posterMeshes);
+
+      const container = document.getElementById('webgl-container');
+      const cursorEl = document.getElementById('custom-cursor');
+      const cursorText = document.getElementById('custom-cursor-text');
+      const cursorDot = document.getElementById('custom-cursor-dot');
+
+      if (intersects.length > 0) {
+        const hitIdx = intersects[0].object.userData.eventIndex;
+        hoveredEventIndex = hitIdx;
+        container.classList.add('pointer-hover');
+        cursorEl.classList.add('visible');
+
+        if (isApproachingBay && targetBayIndex === hitIdx && approachBlend > 0.72) {
+          cursorText.textContent = 'OPEN THE PASS';
+          cursorDot.classList.replace('bg-emerald-400', 'bg-amber-400');
+        } else {
+          cursorText.textContent = 'COME CLOSER';
+          cursorDot.classList.replace('bg-amber-400', 'bg-emerald-400');
+        }
+      } else {
+        hoveredEventIndex = -1;
+        container.classList.remove('pointer-hover');
+        cursorEl.classList.remove('visible');
+      }
+    }
+
+    // =========================================================================
+    // 6. 60FPS ANIMATION LOOP: CURVED SPLINE TRAVEL + NATURAL PERSPECTIVE
+    // =========================================================================
+    const clock = new THREE.Clock();
+    const lookTargetVec = new THREE.Vector3();
+
+    function animateLoop() {
+      requestAnimationFrame(animateLoop);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      const elapsed = clock.getElapsedTime();
+
+      // 1. Continuous automatic forward travel along the curved concourse spline
+      // Slows gracefully when approaching a specific display bay so it never jolts
+      const speedFactor = isApproachingBay ? Math.max(0, 1 - approachBlend * 1.2) : 1;
+      splineProgress = (splineProgress + AUTO_TRAVEL_SPEED * dt * speedFactor) % (Math.PI * 2);
+
+      // 2. Smoothly interpolate approach blend [0 = spline journey, 1 = hero framing]
+      const targetBlend = isApproachingBay ? 1 : 0;
+      approachBlend += (targetBlend - approachBlend) * 0.065;
+
+      // 3. Smooth pointer parallax offset
+      smoothLookX += (pointerNormX - smoothLookX) * 0.06;
+      smoothLookY += (pointerNormY - smoothLookY) * 0.06;
+
+      // 4. Compute Spline Camera Position & Look-Ahead Tangent
+      // Camera physically travels along a circle of radius CAMERA_SPLINE_RADIUS,
+      // looking forward and slightly outward along the curved concourse wall
+      // so the exhibition displays, ivory wall, and towering stadium audience sweep past!
+      const splineCamX = Math.sin(splineProgress) * CAMERA_SPLINE_RADIUS;
+      const splineCamZ = -Math.cos(splineProgress) * CAMERA_SPLINE_RADIUS;
+      const splineCamY = 1.55 + Math.sin(elapsed * 0.55) * 0.14;
+
+      // Look ahead along the curve (+0.62 rad ahead) at radius ~26.5 so both the
+      // curved concourse exhibition bays and the panoramic stadium audience remain framed
+      const lookAheadAngle = splineProgress + 0.62 + smoothLookX * 0.14;
+      const splineLookX = Math.sin(lookAheadAngle) * 26.5;
+      const splineLookZ = -Math.cos(lookAheadAngle) * 26.5;
+      const splineLookY = 2.6 + Math.sin(elapsed * 0.35) * 0.45 + smoothLookY * 1.1;
+
+      if (targetBayIndex >= 0 && posterMeshes[targetBayIndex]) {
+        const bayAngle = posterMeshes[targetBayIndex].userData.angle;
+        // Hero framing position 10.5 units directly in front of the selected stadium bay
+        const heroDist = EXHIBITION_WALL_RADIUS - 10.5;
+        const heroCamX = Math.sin(bayAngle) * heroDist;
+        const heroCamZ = -Math.cos(bayAngle) * heroDist;
+        const heroCamY = 1.75;
+
+        const heroLookX = Math.sin(bayAngle) * EXHIBITION_WALL_RADIUS;
+        const heroLookZ = -Math.cos(bayAngle) * EXHIBITION_WALL_RADIUS;
+        const heroLookY = 1.85 + smoothLookY * 0.35;
+
+        // Blend smoothly between spline journey and hero bay inspection
+        camera.position.set(
+          THREE.MathUtils.lerp(splineCamX, heroCamX, approachBlend),
+          THREE.MathUtils.lerp(splineCamY, heroCamY, approachBlend),
+          THREE.MathUtils.lerp(splineCamZ, heroCamZ, approachBlend)
+        );
+
+        lookTargetVec.set(
+          THREE.MathUtils.lerp(splineLookX, heroLookX, approachBlend),
+          THREE.MathUtils.lerp(splineLookY, heroLookY, approachBlend),
+          THREE.MathUtils.lerp(splineLookZ, heroLookZ, approachBlend)
+        );
+
+        // Keep splineProgress synchronized near the bay so resuming travel continues seamlessly
+        if (approachBlend > 0.85) {
+          splineProgress = (bayAngle - 0.32 + Math.PI * 2) % (Math.PI * 2);
+        }
+      } else {
+        camera.position.set(splineCamX, splineCamY, splineCamZ);
+        lookTargetVec.set(splineLookX, splineLookY, splineLookZ);
+      }
+
+      camera.lookAt(lookTargetVec);
+
+      // Subtle floodlight beam shimmer
+      floodlightBeams.forEach((beam, bIdx) => {
+        beam.material.opacity = (stadiumMoodBright ? 0.055 : 0.036) + 0.012 * Math.sin(elapsed * 1.3 + bIdx);
+      });
+
+      // Update Collection HUD based on current concourse sector
+      updateDynamicCollectionHUD();
+
+      // Raycast hover detection
+      performRaycast();
+
+      renderer.render(scene, camera);
+    }
+
+    function updateDynamicCollectionHUD() {
+      const twoPi = Math.PI * 2;
+      const viewHeading = ((splineProgress + 0.45) % twoPi + twoPi) % twoPi;
+      const deg = Math.round((viewHeading / twoPi) * 360) % 360;
+
+      const angleReadout = document.getElementById('hud-angle-readout');
+      if (angleReadout) {
+        angleReadout.textContent = String(deg).padStart(3, '0') + '°';
+      }
+
+      const eyebrowEl = document.getElementById('hud-eyebrow');
+      const titleEl = document.getElementById('hud-collection-title');
+      const enterBtn = document.getElementById('hud-enter-btn');
+      const counterEl = document.getElementById('hud-collection-counter');
+
+      if (isApproachingBay && approachBlend > 0.55 && targetBayIndex >= 0) {
+        const ev = EVENTS[targetBayIndex];
+        eyebrowEl.textContent = `${ev.collection}  •  ${ev.venue.split(',')[0].toUpperCase()}`;
+        titleEl.textContent = ev.title.toUpperCase();
+        enterBtn.querySelector('span').textContent = `OPEN THE PASS (${formatEventPrice(ev)})`;
+      } else {
+        const colIdx = Math.floor(viewHeading / (twoPi / 4)) % 4;
+        activeCollectionIndex = colIdx;
+        const col = COLLECTIONS[colIdx];
+        eyebrowEl.textContent = 'YOU ARE WALKING PAST';
+        titleEl.textContent = col.title;
+        enterBtn.querySelector('span').textContent = 'ENTER THE COLLECTION';
+        if (counterEl) {
+          counterEl.textContent = `0${colIdx + 1} / 04 · ${EVENTS.length} EVENTS`;
+        }
+      }
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // =========================================================================
+    // 7. MODE SWITCHING (GALLERY / LIST), NAVBAR STYLING & EDITORIAL LIST VIEW
+    // =========================================================================
+    function switchMode(mode) {
+      currentMode = mode;
+      const slider = document.getElementById('toggle-slider');
+      const btnGallery = document.getElementById('btn-mode-gallery');
+      const btnList = document.getElementById('btn-mode-list');
+      const galleryHud = document.getElementById('gallery-hud');
+      const listView = document.getElementById('list-view');
+      const detailView = document.getElementById('detail-view');
+      const navbar = document.getElementById('top-navbar');
+
+      detailView.classList.remove('view-active');
+      detailView.classList.add('view-hidden');
+
+      if (mode === 'gallery') {
+        slider.style.transform = 'translateX(0px)';
+        btnGallery.classList.replace('text-white/65', 'text-[#0d0e17]');
+        btnList.classList.replace('text-[#0d0e17]', 'text-white/65');
+
+        navbar.classList.remove('bg-[#0d0e17]', 'border-b', 'border-white/10');
+        navbar.classList.add('bg-transparent');
+
+        galleryHud.style.opacity = '1';
+        listView.classList.remove('view-active');
+        listView.classList.add('view-hidden');
+      } else {
+        slider.style.transform = 'translateX(84px)';
+        btnList.classList.replace('text-white/65', 'text-[#0d0e17]');
+        btnGallery.classList.replace('text-[#0d0e17]', 'text-white/65');
+
+        navbar.classList.add('bg-[#0d0e17]', 'border-b', 'border-white/10');
+        navbar.classList.remove('bg-transparent');
+
+        galleryHud.style.opacity = '0';
+        listView.classList.remove('view-hidden');
+        listView.classList.add('view-active');
+        renderListView();
+      }
+    }
+
+    function resetToGalleryHome() {
+      resumeConcourseTravel();
+      switchMode('gallery');
+      splineProgress = 0;
+    }
+
+    function jumpToCollection(colIdx) {
+      switchMode('gallery');
+      resumeConcourseTravel();
+      const twoPi = Math.PI * 2;
+      splineProgress = colIdx * (twoPi / 4) + 0.08;
+      toggleIndexModal(false);
+    }
+
+    function enterCurrentCollection() {
+      if (isApproachingBay && approachBlend > 0.55 && targetBayIndex >= 0) {
+        openEventDetail(EVENTS[targetBayIndex]);
+      } else {
+        const col = COLLECTIONS[activeCollectionIndex];
+        switchMode('list');
+        filterListCollection(col.title);
+      }
+    }
+
+    function filterListCollection(collectionName) {
+      activeListFilter = collectionName;
+      document.querySelectorAll('.list-filter-btn').forEach(btn => {
+        if (btn.dataset.filter === collectionName) {
+          btn.className = 'list-filter-btn px-3.5 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-[#f2f3f7] text-[#0d0e17] font-semibold transition-all';
+        } else {
+          btn.className = 'list-filter-btn px-3.5 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-white/10 text-white/75 hover:bg-white/20 transition-all';
+        }
+      });
+      renderListView();
+    }
+
+    function renderListView() {
+      const container = document.getElementById('list-rows-container');
+      const heading = document.getElementById('list-active-heading');
+      const countLabel = document.getElementById('list-count-label');
+
+      const filtered = activeListFilter === 'ALL'
+        ? EVENTS
+        : EVENTS.filter(e => e.collection === activeListFilter);
+
+      heading.textContent = activeListFilter === 'ALL' ? 'ALL STADIUM EVENTS' : activeListFilter;
+      countLabel.textContent = `${filtered.length} EVENTS`;
+
+      // Group by Collection matching ShutaBug's exact grouped editorial directory
+      const groupsToRender = activeListFilter === 'ALL'
+        ? COLLECTIONS
+        : COLLECTIONS.filter(c => c.title === activeListFilter);
+
+      container.innerHTML = groupsToRender.map(col => {
+        const colEvents = filtered.filter(e => e.collection === col.title);
+        return `
+          <div class="mb-14">
+            <div class="flex items-center justify-between py-4 border-b border-white/15">
+              <div class="flex items-baseline gap-3">
+                <h3 class="font-display text-2xl sm:text-3xl tracking-wide text-white uppercase">${escapeHTML(col.title)}</h3>
+                <span class="font-mono text-[11px] text-white/50 uppercase">· ${colEvents.length} EVENTS</span>
+              </div>
+              <button onclick="filterListCollection('${activeListFilter === 'ALL' ? col.title : 'ALL'}')" class="font-mono text-[11px] tracking-widest uppercase text-white/70 hover:text-white">
+                ${activeListFilter === 'ALL' ? `ALL ${colEvents.length} →` : `VIEW ALL ${EVENTS.length} →`}
+              </button>
+            </div>
+
+            <div class="divide-y divide-white/10">
+              ${colEvents.map(ev => `
+                <div onclick="openEventDetailById('${ev.id}')" class="group py-8 sm:py-10 grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-10 items-center cursor-pointer">
+                  <div class="md:col-span-5 overflow-hidden rounded-lg bg-[#11131f] shadow-xl">
+                    <img src="${posterDataUrls[ev.id]}" alt="${escapeHTML(ev.title)}"
+                      class="w-full h-64 sm:h-72 object-cover object-center transition-transform duration-500 group-hover:scale-105" />
+                  </div>
+                  <div class="md:col-span-7 flex flex-col justify-between">
+                    <div class="flex items-start justify-between border-b border-white/15 pb-4 mb-4 gap-4">
+                      <div>
+                        <h4 class="font-display text-3xl sm:text-4xl tracking-wide text-white uppercase group-hover:text-amber-200 transition-colors">${escapeHTML(ev.title)}</h4>
+                        <p class="font-mono text-[11px] tracking-[0.18em] text-white/55 uppercase mt-1">${escapeHTML(ev.collection)} · ${escapeHTML(ev.venue)}</p>
+                      </div>
+                      <div class="text-right shrink-0">
+                        <span class="block font-sans text-lg sm:text-xl font-semibold text-white">${escapeHTML(formatEventPrice(ev))}</span>
+                        <span class="font-mono text-[10px] text-emerald-400 uppercase">VERIFIED</span>
+                      </div>
+                    </div>
+                    <div class="flex items-center justify-between text-xs text-white/60">
+                    <span>${escapeHTML(ev.date)}</span>
+                      <span class="font-mono text-[11px] uppercase tracking-widest text-white/85 group-hover:translate-x-1 transition-transform">INSPECT PASS →</span>
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // =========================================================================
+    // 8. INDIVIDUAL EVENT & TICKET DETAIL PAGE ("View In Stadium" + "RESERVE PASS")
+    // =========================================================================
+    function openEventDetailById(id) {
+      const ev = EVENTS.find(item => item.id === id);
+      if (ev) openEventDetail(ev);
+    }
+
+    function openEventDetail(ev) {
+      selectedDetailEvent = ev;
+      selectedTierIndex = 0;
+      activeTicketTypes = Array.isArray(ev.ticketTypes) ? ev.ticketTypes : [];
+      detailExpanded = false;
+
+      const detailView = document.getElementById('detail-view');
+      const galleryHud = document.getElementById('gallery-hud');
+      const listView = document.getElementById('list-view');
+      const navbar = document.getElementById('top-navbar');
+
+      navbar.classList.add('bg-[#0d0e17]', 'border-b', 'border-white/10');
+      navbar.classList.remove('bg-transparent');
+
+      galleryHud.style.opacity = '0';
+      listView.classList.remove('view-active');
+      listView.classList.add('view-hidden');
+
+      detailView.classList.remove('view-hidden');
+      detailView.classList.add('view-active');
+      detailView.scrollTop = 0;
+
+      document.getElementById('detail-poster-img').src = posterDataUrls[ev.id];
+      document.getElementById('detail-breadcrumb').textContent = `• ${ev.collection} / Verified Stadium Allocation`;
+      document.getElementById('detail-collection-heading').textContent = ev.collection;
+      document.getElementById('detail-event-quoted-title').textContent = `'${ev.title.toUpperCase()}'`;
+      document.getElementById('detail-description').textContent = ev.description;
+      document.getElementById('detail-read-more-btn').textContent = 'Read more';
+      document.getElementById('detail-venue').textContent = ev.venue;
+      document.getElementById('detail-date').textContent = ev.date;
+
+      renderTierOptions();
+      updateSaveButtonUI();
+      if (ev.apiEventId && !ev.ticketTypes) {
+        apiRequest(`/v1/events/${encodeURIComponent(ev.apiEventId)}/ticket-types`)
+          .then(types => {
+            ev.ticketTypes = Array.isArray(types) ? types : [];
+            activeTicketTypes = ev.ticketTypes;
+            if (selectedDetailEvent === ev) renderTierOptions();
+          })
+          .catch(error => showToast(error.message || 'Could not load ticket inventory'));
+      }
+    }
+
+    function toggleDetailReadMore() {
+      detailExpanded = !detailExpanded;
+      const descEl = document.getElementById('detail-description');
+      const btnEl = document.getElementById('detail-read-more-btn');
+      if (detailExpanded) {
+        descEl.textContent = `${selectedDetailEvent.description} ${selectedDetailEvent.extendedDescription}`;
+        btnEl.textContent = 'Show less';
+      } else {
+        descEl.textContent = selectedDetailEvent.description;
+        btnEl.textContent = 'Read more';
+      }
+    }
+
+    function closeDetailView() {
+      const detailView = document.getElementById('detail-view');
+      const navbar = document.getElementById('top-navbar');
+      detailView.classList.remove('view-active');
+      detailView.classList.add('view-hidden');
+
+      if (currentMode === 'gallery') {
+        navbar.classList.remove('bg-[#0d0e17]', 'border-b', 'border-white/10');
+        navbar.classList.add('bg-transparent');
+        document.getElementById('gallery-hud').style.opacity = '1';
+      } else {
+        const listView = document.getElementById('list-view');
+        listView.classList.remove('view-hidden');
+        listView.classList.add('view-active');
+      }
+    }
+
+    function viewCurrentEventInStadium() {
+      const evIdx = EVENTS.findIndex(e => e.id === selectedDetailEvent.id);
+      closeDetailView();
+      switchMode('gallery');
+      if (evIdx >= 0) {
+        targetBayIndex = evIdx;
+        isApproachingBay = true;
+        updateZoomUI(true);
+      }
+    }
+
+    function navigateDetailEvent(dir) {
+      const idx = EVENTS.findIndex(e => e.id === selectedDetailEvent.id);
+      const nextIdx = (idx + dir + EVENTS.length) % EVENTS.length;
+      openEventDetail(EVENTS[nextIdx]);
+    }
+
+    function renderTierOptions() {
+      const grid = document.getElementById('tier-selector-grid');
+      const ev = selectedDetailEvent;
+	  const reserveButton = document.getElementById('reserve-pass-btn');
+	  if (ev.apiEventId) {
+	    const availableTypes = activeTicketTypes.filter(type => Number(type.available) > 0);
+	    if (!availableTypes.length) {
+	      grid.innerHTML = `<p class="col-span-2 text-xs text-white/55 py-3">${activeTicketTypes.length ? 'SOLD OUT' : 'LOADING LIVE INVENTORY…'}</p>`;
+	      document.getElementById('detail-price').textContent = '—';
+	      reserveButton.disabled = true;
+	      reserveButton.classList.add('opacity-50', 'cursor-not-allowed');
+	      return;
+	    }
+	    if (selectedTierIndex >= availableTypes.length) selectedTierIndex = 0;
+	    grid.innerHTML = availableTypes.map((type, idx) => {
+	      const isSelected = idx === selectedTierIndex;
+	      const name = escapeHTML(type.name);
+	      const price = formatEventPrice(ev, type.price_minor);
+	      const stock = Number(type.available);
+	      return `<button onclick="selectTicketTier(${idx})" class="text-left p-3 rounded-xl border transition-all ${isSelected ? 'bg-[#f2f3f7] text-[#0d0e17] border-[#f2f3f7] shadow-lg' : 'bg-white/[0.04] text-white border-white/15 hover:border-white/35'}">
+	        <div class="flex items-center justify-between"><span class="font-semibold text-xs">${name}</span><span class="font-mono text-xs font-bold">${escapeHTML(price)}</span></div>
+	        <span class="block text-[10px] mt-1 ${isSelected ? 'text-[#0d0e17]/70' : 'text-white/50'}">${stock} available</span></button>`;
+	    }).join('');
+	    document.getElementById('detail-price').textContent = formatEventPrice(ev, availableTypes[selectedTierIndex].price_minor);
+	    reserveButton.disabled = false;
+	    reserveButton.classList.remove('opacity-50', 'cursor-not-allowed');
+	    return;
+	  }
+	  reserveButton.disabled = false;
+	  reserveButton.classList.remove('opacity-50', 'cursor-not-allowed');
+
+      grid.innerHTML = TICKET_TIERS.map((tier, idx) => {
+        const isSelected = idx === selectedTierIndex;
+        const tierPrice = Math.round(ev.basePrice * tier.mult);
+        return `
+          <button onclick="selectTicketTier(${idx})"
+            class="text-left p-3 rounded-xl border transition-all ${isSelected
+              ? 'bg-[#f2f3f7] text-[#0d0e17] border-[#f2f3f7] shadow-lg'
+              : 'bg-white/[0.04] text-white border-white/15 hover:border-white/35'}">
+            <div class="flex items-center justify-between">
+              <span class="font-semibold text-xs">${tier.name}</span>
+              <span class="font-mono text-xs font-bold">${formatPrice(tierPrice)}</span>
+            </div>
+            <span class="block text-[10px] mt-1 ${isSelected ? 'text-[#0d0e17]/70' : 'text-white/50'}">${tier.section} · ${tier.left}</span>
+          </button>
+        `;
+      }).join('');
+
+      const activeTier = TICKET_TIERS[selectedTierIndex];
+      const finalPrice = Math.round(ev.basePrice * activeTier.mult);
+      document.getElementById('detail-price').textContent = formatPrice(finalPrice);
+    }
+
+    function selectTicketTier(idx) {
+      selectedTierIndex = idx;
+      renderTierOptions();
+    }
+
+    // =========================================================================
+    // 9. BAG, CURRENCY, SEARCH, INDEX, ATMOSPHERE & DRAWER HANDLERS
+    // =========================================================================
+    function formatPrice(usdAmount) {
+      const cfg = CURRENCY_RATES[currentCurrency];
+      const converted = usdAmount * cfg.rate;
+      return `${cfg.symbol}${converted.toLocaleString(undefined, {
+        minimumFractionDigits: cfg.decimals,
+        maximumFractionDigits: cfg.decimals
+      })}`;
+    }
+
+    function changeCurrency(newCurr) {
+      currentCurrency = newCurr;
+      if (!document.getElementById('detail-view').classList.contains('view-hidden')) {
+        renderTierOptions();
+      }
+      if (currentMode === 'list') {
+        renderListView();
+      }
+      renderBagDrawer();
+      showToast(`Currency updated to ${newCurr}`);
+    }
+
+    function toggleStadiumAtmosphere() {
+      stadiumMoodBright = !stadiumMoodBright;
+      if (scene && hemiLight) {
+        if (stadiumMoodBright) {
+          scene.fog.density = 0.0032;
+          hemiLight.intensity = 1.32;
+          showToast('Stadium Floodlights: Full Match-Night Boost');
+        } else {
+          scene.fog.density = 0.0052;
+          hemiLight.intensity = 1.1;
+          showToast('Stadium Floodlights: Atmospheric Night Mode');
+        }
+      }
+    }
+
+    function addCurrentEventToBag() {
+      const ev = selectedDetailEvent;
+      if (!ev.apiEventId) {
+        showToast('Preview events are not bookable. Publish this event in FAIRPASS first.');
+        return;
+      }
+      const types = activeTicketTypes.filter(type => Number(type.available) > 0);
+      const ticketType = types[selectedTierIndex];
+      if (!ticketType) {
+        showToast('Live ticket inventory is not available');
+        return;
+      }
+      const tier = TICKET_TIERS[selectedTierIndex] || { name: 'Official Ticket' };
+      const unitPriceMinor = Number(ticketType.price_minor);
+      if (cartBag.length && cartBag.some(item => item.event.currency !== ev.currency)) {
+        showToast('Check out tickets in one currency at a time');
+        return;
+      }
+      const key = `${ev.id}-${ticketType.id}`;
+
+      const existing = cartBag.find(item => item.key === key);
+      if (existing) {
+        if (existing.qty >= Math.min(Number(ticketType.available), Number(ticketType.per_user_limit))) {
+          showToast('Purchase limit or available inventory reached');
+          return;
+        }
+        existing.qty += 1;
+      } else {
+        cartBag.push({
+          key,
+          event: ev,
+          tier: { ...tier, id: ticketType.id, name: ticketType.name, left: `${ticketType.available} available` },
+          ticketType,
+          unitPriceMinor,
+          qty: 1
+        });
+      }
+      updateBagCount();
+      renderBagDrawer();
+      toggleBagDrawer(true);
+      showToast(`Reserved ${ev.title} (${tier.name})`);
+    }
+
+    function updateBagCount() {
+      const total = cartBag.reduce((acc, item) => acc + item.qty, 0);
+      document.getElementById('bag-count').textContent = `(${total})`;
+    }
+
+    function renderBagDrawer() {
+      const list = document.getElementById('bag-items-list');
+      const subtotalEl = document.getElementById('bag-subtotal');
+
+      if (cartBag.length === 0) {
+        list.innerHTML = `<p class="text-xs text-white/50 py-10 text-center font-mono">YOUR PASS BAG IS EMPTY.</p>`;
+        subtotalEl.textContent = formatPrice(0);
+        return;
+      }
+
+      let subtotalMinor = 0;
+      list.innerHTML = cartBag.map((item, idx) => {
+        subtotalMinor += item.unitPriceMinor * item.qty;
+        return `
+          <div class="flex gap-3 p-3 rounded-xl bg-white/[0.04] border border-white/10">
+            <img src="${posterDataUrls[item.event.id]}" alt="${escapeHTML(item.event.title)}" class="w-14 h-16 object-cover rounded-md" />
+            <div class="flex-1 min-w-0">
+              <h4 class="text-xs font-semibold text-white truncate">${escapeHTML(item.event.title)}</h4>
+              <p class="font-mono text-[10px] text-white/55 mt-0.5">${escapeHTML(item.tier.name)}</p>
+              <div class="flex items-center justify-between mt-2">
+                <div class="flex items-center gap-2 bg-white/10 rounded-full px-2 py-0.5 text-xs">
+                  <button onclick="updateBagQty(${idx}, -1)" class="hover:text-amber-300">−</button>
+                  <span class="font-mono text-[11px]">${item.qty}</span>
+                  <button onclick="updateBagQty(${idx}, 1)" class="hover:text-amber-300">+</button>
+                </div>
+                <span class="font-mono text-xs font-semibold text-white">${escapeHTML(formatEventPrice(item.event, item.unitPriceMinor * item.qty))}</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      subtotalEl.textContent = formatEventPrice(cartBag[0].event, subtotalMinor);
+    }
+
+    function updateBagQty(idx, delta) {
+      if (delta > 0) {
+        const maximum = Math.min(Number(cartBag[idx].ticketType.available), Number(cartBag[idx].ticketType.per_user_limit));
+        if (cartBag[idx].qty >= maximum) {
+          showToast('Purchase limit or available inventory reached');
+          return;
+        }
+      }
+      cartBag[idx].qty += delta;
+      if (cartBag[idx].qty <= 0) {
+        cartBag.splice(idx, 1);
+      }
+      updateBagCount();
+      renderBagDrawer();
+    }
+
+    async function ensureRazorpayCheckout() {
+      if (window.Razorpay) return;
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('Could not load secure payment checkout'));
+        document.head.appendChild(script);
+      });
+    }
+
+    async function waitForBookingPaid(bookingId) {
+      let current = null;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        current = await apiRequest(`/v1/bookings/${encodeURIComponent(bookingId)}`);
+        if (current.status === 'paid') return current;
+        if (['failed', 'cancelled', 'refunded'].includes(current.status)) throw new Error(`Booking ${current.status}`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+      return current;
+    }
+
+    async function payForBagItem(item) {
+      const keyName = `fairpass_idem_${item.key}`;
+      const idempotencyKey = sessionStorage.getItem(keyName) || crypto.randomUUID();
+      sessionStorage.setItem(keyName, idempotencyKey);
+      let bookingId = item.bookingId || sessionStorage.getItem(`fairpass_booking_${item.key}`);
+      if (bookingId) {
+        try {
+          const existing = await apiRequest(`/v1/bookings/${encodeURIComponent(bookingId)}`);
+          if (existing.status === 'paid') return existing;
+          if (['cancelled', 'failed', 'refunded'].includes(existing.status)) bookingId = '';
+        } catch (_) { bookingId = ''; }
+      }
+      if (!bookingId) {
+        const booking = await apiRequest('/v1/bookings', {
+          method: 'POST',
+          body: JSON.stringify({ ticket_type_id: item.ticketType.id, quantity: item.qty, idempotency_key: idempotencyKey })
+        });
+        bookingId = booking.booking_id;
+        item.bookingId = bookingId;
+        sessionStorage.setItem(`fairpass_booking_${item.key}`, bookingId);
+      }
+      const order = await apiRequest(`/v1/bookings/${encodeURIComponent(bookingId)}/payment-order`, { method: 'POST', body: '{}' });
+      await ensureRazorpayCheckout();
+      return new Promise((resolve, reject) => {
+        const checkout = new window.Razorpay({
+          key: order.key_id,
+          amount: order.amount_minor,
+          currency: order.currency,
+          name: 'FAIRPASS',
+          description: item.event.title,
+          order_id: order.order_id,
+          handler: async function () {
+            try { resolve(await waitForBookingPaid(bookingId)); } catch (error) { reject(error); }
+          },
+          modal: { ondismiss: () => reject(new Error('Payment window closed. Your reservation may remain active briefly.')) }
+        });
+        checkout.on('payment.failed', response => reject(new Error(response.error?.description || 'Payment failed')));
+        checkout.open();
+      });
+    }
+
+    async function checkoutBag() {
+      if (cartBag.length === 0) {
+        showToast('Select a stadium event pass first');
+        return;
+      }
+      if (!accessToken) {
+        checkoutAfterAuth = true;
+        openLoginPage();
+        showToast('Sign in before booking tickets');
+        return;
+      }
+      const items = [...cartBag];
+      for (const item of items) {
+        try {
+          const bookingStatus = await payForBagItem(item);
+          cartBag = cartBag.filter(current => current.key !== item.key);
+          sessionStorage.removeItem(`fairpass_idem_${item.key}`);
+          sessionStorage.removeItem(`fairpass_booking_${item.key}`);
+          updateBagCount();
+          renderBagDrawer();
+          showToast(bookingStatus?.status === 'paid' ? `Payment confirmed · ${item.event.title}` : `Payment received · confirmation pending for ${item.event.title}`);
+        } catch (error) {
+          showToast(error.message || 'Could not complete payment');
+          break;
+        }
+      }
+      if (!cartBag.length) toggleBagDrawer(false);
+    }
+
+    function toggleSaveCurrentEvent() {
+      const id = selectedDetailEvent.id;
+      if (savedEventIds.has(id)) {
+        savedEventIds.delete(id);
+        showToast('Removed from Saved Events');
+      } else {
+        savedEventIds.add(id);
+        showToast('Saved to your FairPass Watchlist');
+      }
+      updateSaveButtonUI();
+    }
+
+    function updateSaveButtonUI() {
+      const btn = document.getElementById('detail-save-btn');
+      const badge = document.getElementById('saved-badge');
+      const isSaved = savedEventIds.has(selectedDetailEvent.id);
+      btn.classList.toggle('bg-amber-400', isSaved);
+      btn.classList.toggle('text-[#0d0e17]', isSaved);
+      badge.classList.toggle('hidden', savedEventIds.size === 0);
+    }
+
+    function toggleSearchModal(show) {
+      const modal = document.getElementById('search-modal');
+      modal.classList.toggle('hidden', !show);
+      if (show) {
+        const input = document.getElementById('search-input');
+        input.value = '';
+        renderSearchResults('');
+        setTimeout(() => input.focus(), 50);
+      }
+    }
+
+    function renderSearchResults(query) {
+      const q = query.trim().toLowerCase();
+      const matches = EVENTS.filter(ev =>
+        ev.title.toLowerCase().includes(q) ||
+        ev.collection.toLowerCase().includes(q) ||
+        ev.venue.toLowerCase().includes(q)
+      );
+
+      document.getElementById('search-results').innerHTML = matches.map((ev) => `
+        <div class="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-white/[0.06] transition-colors">
+          <button onclick="selectSearchMatch('${ev.id}')" class="flex items-center gap-3.5 text-left flex-1 min-w-0">
+            <img src="${posterDataUrls[ev.id]}" alt="${escapeHTML(ev.title)}" class="w-10 h-12 object-cover rounded" />
+            <div class="min-w-0">
+              <p class="text-xs font-semibold text-white truncate">${escapeHTML(ev.title)}</p>
+              <p class="font-mono text-[10px] text-white/50 truncate">${escapeHTML(ev.collection)} · ${escapeHTML(ev.venue)}</p>
+            </div>
+          </button>
+          <div class="flex items-center gap-2 shrink-0">
+            <button onclick="jumpToEventBayFromSearch('${ev.id}')" class="font-mono text-[10px] px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/20 text-white/85 uppercase">
+              360° BAY
+            </button>
+            <button onclick="selectSearchMatch('${ev.id}')" class="font-mono text-xs font-semibold text-amber-300">
+              ${escapeHTML(formatEventPrice(ev))}
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function selectSearchMatch(id) {
+      toggleSearchModal(false);
+      openEventDetailById(id);
+    }
+
+    function jumpToEventBayFromSearch(id) {
+      const evIdx = EVENTS.findIndex(e => e.id === id);
+      toggleSearchModal(false);
+      switchMode('gallery');
+      if (evIdx >= 0) {
+        targetBayIndex = evIdx;
+        isApproachingBay = true;
+        updateZoomUI(true);
+      }
+    }
+
+    function toggleIndexModal(show) {
+      const modal = document.getElementById('index-modal');
+      modal.classList.toggle('hidden', !show);
+      if (show) {
+        const grid = document.getElementById('index-collections-grid');
+        grid.innerHTML = COLLECTIONS.map((col, cIdx) => {
+          const colEvents = EVENTS.filter(e => e.collectionIdx === cIdx);
+          return `
+            <div class="p-6 rounded-2xl bg-white/[0.03] border border-white/10">
+              <div class="flex items-center justify-between pb-3 border-b border-white/10 mb-4">
+                <div>
+                  <span class="font-mono text-[10px] text-white/45">SECTOR 0${cIdx + 1}</span>
+                  <h3 class="font-display text-2xl text-white uppercase">${escapeHTML(col.title)}</h3>
+                </div>
+                <button onclick="jumpToCollection(${cIdx})" class="font-mono text-[10px] px-3 py-1 rounded-full bg-[#f2f3f7] text-[#0d0e17] font-bold uppercase">
+                  WALK 360° →
+                </button>
+              </div>
+              <ul class="space-y-2.5">
+                ${colEvents.map(ev => `
+                  <li>
+                    <button onclick="toggleIndexModal(false); openEventDetailById('${ev.id}')" class="w-full flex items-center justify-between text-xs text-white/80 hover:text-white py-1">
+                      <span>${escapeHTML(ev.title)}</span>
+                      <span class="font-mono text-white/50">${escapeHTML(formatEventPrice(ev))}</span>
+                    </button>
+                  </li>
+                `).join('')}
+              </ul>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    function toggleBagDrawer(show) {
+      const drawer = document.getElementById('bag-drawer');
+      drawer.classList.toggle('hidden', !show);
+      if (show) renderBagDrawer();
+    }
+
+    function toggleHelpModal(show) {
+      document.getElementById('help-modal').classList.toggle('hidden', !show);
+    }
+
+    function toggleInfoModal(show) {
+      document.getElementById('info-modal').classList.toggle('hidden', !show);
+    }
+
+    function toggleSavedModal(show) {
+      const modal = document.getElementById('saved-modal');
+      modal.classList.toggle('hidden', !show);
+      if (show) {
+        const container = document.getElementById('saved-list-container');
+        const saved = EVENTS.filter(e => savedEventIds.has(e.id));
+        container.innerHTML = saved.length
+          ? saved.map(ev => `
+              <button onclick="toggleSavedModal(false); openEventDetailById('${ev.id}')" class="w-full flex items-center justify-between p-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-left">
+                <div>
+                  <p class="text-xs font-semibold text-white">${escapeHTML(ev.title)}</p>
+                  <p class="font-mono text-[10px] text-white/50">${escapeHTML(ev.venue)}</p>
+                </div>
+                <span class="font-mono text-xs text-amber-300">${escapeHTML(formatEventPrice(ev))}</span>
+              </button>
+            `).join('')
+          : `<p class="text-xs text-white/50 py-6 text-center font-mono">NO SAVED EVENTS YET.</p>`;
+      }
+    }
+
+    function dismissPresaleCard() {
+      const card = document.getElementById('presale-card');
+      card.style.opacity = '0';
+      card.style.transform = 'translateY(12px)';
+      setTimeout(() => card.remove(), 300);
+    }
+
+    function handlePresaleSignup(e) {
+      e.preventDefault();
+      const input = document.getElementById('presale-email');
+      if (input.value) {
+        showToast(`Dispatches activated for ${input.value}`);
+        input.value = '';
+      }
+    }
+
+    function isAnyModalOpen() {
+      return document.getElementById('login-page').classList.contains('login-open') ||
+             !document.getElementById('search-modal').classList.contains('hidden') ||
+             !document.getElementById('index-modal').classList.contains('hidden') ||
+             !document.getElementById('bag-drawer').classList.contains('hidden') ||
+             !document.getElementById('help-modal').classList.contains('hidden') ||
+             !document.getElementById('info-modal').classList.contains('hidden') ||
+             !document.getElementById('saved-modal').classList.contains('hidden') ||
+             !document.getElementById('account-modal').classList.contains('hidden') ||
+             !document.getElementById('detail-view').classList.contains('view-hidden');
+    }
+
+    let toastTimer;
+    function showToast(msg) {
+      const el = document.getElementById('toast-banner');
+      el.textContent = msg;
+      el.classList.remove('opacity-0', '-translate-y-2');
+      el.classList.add('opacity-100', 'translate-y-0');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        el.classList.add('opacity-0', '-translate-y-2');
+        el.classList.remove('opacity-100', 'translate-y-0');
+      }, 2800);
+    }
+
+    // =========================================================================
+    // 10. BOOTSTRAP ON WINDOW LOAD
+    // =========================================================================
+    window.onload = async function () {
+      const bar = document.getElementById('loader-bar');
+      bar.style.width = '65%';
+
+      await loadPublishedEvents();
+
+      setTimeout(() => {
+        initThreeEngine();
+        bar.style.width = '100%';
+        updateSaveButtonUI();
+
+        setTimeout(() => {
+          const curtain = document.getElementById('intro-curtain');
+          curtain.style.opacity = '0';
+          curtain.style.visibility = 'hidden';
+        }, 420);
+      }, 200);
+    };
+  </script>
+</body>
+</html>

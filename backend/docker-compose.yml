@@ -13,6 +13,7 @@ services:
       - ./migrations/000003_abuse_controls.up.sql:/docker-entrypoint-initdb.d/003-abuse-controls.sql:ro
       - ./migrations/000004_payment_attempts.up.sql:/docker-entrypoint-initdb.d/004-payment-attempts.sql:ro
       - ./migrations/000005_quai_wallets.up.sql:/docker-entrypoint-initdb.d/005-quai-wallets.sql:ro
+      - ./migrations/000006_ticket_signatures.up.sql:/docker-entrypoint-initdb.d/006-ticket-signatures.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U fairpass -d fairpass"]
       interval: 5s
@@ -23,6 +24,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://fairpass:fairpass@db:5432/fairpass?sslmode=disable
+      TICKET_SIGNING_PRIVATE_KEY: ${TICKET_SIGNING_PRIVATE_KEY:-}
       QUAI_BRIDGE_URL: http://quai-bridge:8090
       QUAI_BRIDGE_TOKEN: ${QUAI_BRIDGE_TOKEN:-}
       QUAI_CONTRACT_ADDRESS: ${QUAI_CONTRACT_ADDRESS:-}

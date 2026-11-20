@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"github.com/fairpass/backend/internal/config"
 	"github.com/fairpass/backend/internal/payments"
 	"github.com/fairpass/backend/internal/quai"
+	"github.com/fairpass/backend/internal/ticketcrypto"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,12 +39,14 @@ func New(c config.Config, p *pgxpool.Pool) http.Handler {
 }
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
+	s.mux.HandleFunc("GET /", s.frontend)
 	s.mux.HandleFunc("POST /v1/auth/register", s.register)
 	s.mux.HandleFunc("POST /v1/auth/login", s.login)
 	s.mux.HandleFunc("POST /v1/auth/refresh", s.refresh)
 	s.mux.Handle("POST /v1/auth/logout", s.protect(http.HandlerFunc(s.logout)))
 	s.mux.Handle("GET /v1/me", s.protect(http.HandlerFunc(s.me)))
 	s.mux.Handle("GET /v1/me/tickets", s.protect(http.HandlerFunc(s.myTickets)))
+	s.mux.Handle("GET /v1/me/tickets/{id}/credential", s.protect(http.HandlerFunc(s.ticketCredential)))
 	s.mux.Handle("PUT /v1/me/wallet", s.protect(http.HandlerFunc(s.setWallet)))
 	s.mux.Handle("POST /v1/tickets/{id}/transfer", s.protect(http.HandlerFunc(s.transferTicket)))
 	s.mux.Handle("POST /v1/admin/users/{id}/verify-organizer", s.protect(s.adminOnly(http.HandlerFunc(s.verifyOrganizer))))
@@ -52,6 +56,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/events/{id}/ticket-types", s.ticketTypes)
 	s.mux.Handle("POST /v1/events/{id}/publish", s.protect(http.HandlerFunc(s.publishEvent)))
 	s.mux.Handle("POST /v1/bookings", s.protect(http.HandlerFunc(s.book)))
+	s.mux.Handle("GET /v1/bookings/{id}", s.protect(http.HandlerFunc(s.bookingStatus)))
 	s.mux.Handle("POST /v1/bookings/{id}/payment-order", s.protect(http.HandlerFunc(s.paymentOrder)))
 	s.mux.Handle("POST /v1/bookings/{id}/refund", s.protect(http.HandlerFunc(s.requestRefund)))
 	s.mux.HandleFunc("POST /v1/payments/razorpay/webhook", s.webhook)
@@ -273,6 +278,22 @@ func (s *Server) myTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+func (s *Server) ticketCredential(w http.ResponseWriter, r *http.Request) {
+	var token string
+	err := s.db.QueryRow(r.Context(), `SELECT n.payload->>'qr_token'
+		FROM tickets t JOIN notifications n ON n.user_id=t.owner_id
+		WHERE t.id=$1 AND t.owner_id=$2 AND t.status IN ('active','transferred')
+		AND n.template IN ('ticket_issued','ticket_transferred')
+		AND n.payload->>'ticket_id'=t.id::text AND COALESCE(n.payload->>'qr_token','')<>''
+		ORDER BY n.created_at DESC LIMIT 1`, r.PathValue("id"), userID(r)).Scan(&token)
+	if err != nil {
+		writeError(w, 404, "active ticket credential not found")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]string{"ticket_id": r.PathValue("id"), "qr_token": token})
 }
 
 func (s *Server) transferTicket(w http.ResponseWriter, r *http.Request) {
@@ -528,7 +549,9 @@ func (s *Server) createTicketType(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]string{"id": id})
 }
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
-	rows, e := s.db.Query(r.Context(), `SELECT id,title,description,category,starts_at,ends_at,currency,status FROM events WHERE status='published' ORDER BY starts_at LIMIT 100`)
+	rows, e := s.db.Query(r.Context(), `SELECT e.id,e.title,e.description,e.category,e.starts_at,e.ends_at,e.currency,e.status,
+		COALESCE(v.name || ', ' || v.city,'Venue to be announced'),COALESCE((SELECT MIN(tt.price_minor) FROM ticket_types tt WHERE tt.event_id=e.id),0)
+		FROM events e LEFT JOIN venues v ON v.id=e.venue_id WHERE e.status='published' ORDER BY e.starts_at LIMIT 100`)
 	if e != nil {
 		writeError(w, 500, "could not load events")
 		return
@@ -536,13 +559,30 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var id, title, desc, cat, currency, status string
+		var id, title, desc, cat, currency, status, venue string
+		var minPrice int64
 		var start, end time.Time
-		if rows.Scan(&id, &title, &desc, &cat, &start, &end, &currency, &status) == nil {
-			items = append(items, map[string]any{"id": id, "title": title, "description": desc, "category": cat, "starts_at": start, "ends_at": end, "currency": currency, "status": status})
+		if rows.Scan(&id, &title, &desc, &cat, &start, &end, &currency, &status, &venue, &minPrice) == nil {
+			items = append(items, map[string]any{"id": id, "title": title, "description": desc, "category": cat, "starts_at": start, "ends_at": end, "currency": strings.TrimSpace(currency), "status": status, "venue": venue, "base_price_minor": minPrice})
 		}
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, 500, "could not load events")
+		return
+	}
 	writeJSON(w, 200, items)
+}
+
+func (s *Server) bookingStatus(w http.ResponseWriter, r *http.Request) {
+	var status string
+	var issued int
+	err := s.db.QueryRow(r.Context(), `SELECT b.status,(SELECT count(*)::integer FROM tickets t WHERE t.booking_id=b.id)
+		FROM bookings b WHERE b.id=$1 AND b.user_id=$2`, r.PathValue("id"), userID(r)).Scan(&status, &issued)
+	if err != nil {
+		writeError(w, 404, "booking not found")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"booking_id": r.PathValue("id"), "status": status, "tickets_issued": issued})
 }
 
 func (s *Server) ticketTypes(w http.ResponseWriter, r *http.Request) {
@@ -923,7 +963,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 			if e == nil && changed != "" {
 				_, e = tx.Exec(ctx, `UPDATE ticket_types tt SET quantity_reserved=GREATEST(0,tt.quantity_reserved-bi.quantity),quantity_sold=tt.quantity_sold+bi.quantity FROM booking_items bi WHERE bi.booking_id=$1 AND tt.id=bi.ticket_type_id`, bookingID)
 				if e == nil {
-					e = issueTickets(ctx, tx, bookingID)
+					e = issueTickets(ctx, tx, bookingID, s.cfg.TicketSigningPrivateKey)
 				}
 			} else if e == nil {
 				// A late capture after its reservation expired must be surfaced for refund.
@@ -1039,9 +1079,9 @@ func applyRefundWebhook(ctx context.Context, tx pgx.Tx, refundID, providerPaymen
 
 // issueTickets creates high entropy QR credentials and stores only their hashes.
 // The notification worker receives the one-time credential for secure delivery.
-func issueTickets(ctx context.Context, tx pgx.Tx, bookingID string) error {
-	var owner, wallet string
-	if err := tx.QueryRow(ctx, `SELECT b.user_id,COALESCE(u.wallet_address,'') FROM bookings b JOIN users u ON u.id=b.user_id WHERE b.id=$1`, bookingID).Scan(&owner, &wallet); err != nil {
+func issueTickets(ctx context.Context, tx pgx.Tx, bookingID string, signingKey ed25519.PrivateKey) error {
+	var owner, wallet, eventID string
+	if err := tx.QueryRow(ctx, `SELECT b.user_id,COALESCE(u.wallet_address,''),b.event_id FROM bookings b JOIN users u ON u.id=b.user_id WHERE b.id=$1`, bookingID).Scan(&owner, &wallet, &eventID); err != nil {
 		return err
 	}
 	rows, err := tx.Query(ctx, `SELECT ticket_type_id,quantity FROM booking_items WHERE booking_id=$1`, bookingID)
@@ -1070,9 +1110,17 @@ func issueTickets(ctx context.Context, tx pgx.Tx, bookingID string) error {
 			if err != nil {
 				return err
 			}
-			digest := auth.SHA256Hex([]byte(token))
 			var ticketID string
-			if err = tx.QueryRow(ctx, `INSERT INTO tickets(booking_id,ticket_type_id,owner_id,ticket_hash,qr_token_hash,status) VALUES($1,$2,$3,$4,$4,'active') RETURNING id`, bookingID, i.typeID, owner, digest).Scan(&ticketID); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT gen_random_uuid()::text`).Scan(&ticketID); err != nil {
+				return err
+			}
+			canonical := ticketcrypto.Data{Version: 1, TicketID: ticketID, BookingID: bookingID, EventID: eventID, TicketTypeID: i.typeID, OwnerID: owner}
+			ticketHash, signature, signErr := ticketcrypto.Sign(canonical, signingKey)
+			if signErr != nil {
+				return signErr
+			}
+			if err = tx.QueryRow(ctx, `INSERT INTO tickets(id,booking_id,ticket_type_id,owner_id,ticket_hash,qr_token_hash,ticket_signature,integrity_version,status)
+				VALUES($1,$2,$3,$4,$5,encode(digest($6,'sha256'),'hex'),$7,1,'active') RETURNING id`, ticketID, bookingID, i.typeID, owner, ticketHash, token, signature).Scan(&ticketID); err != nil {
 				return err
 			}
 			if wallet != "" {
@@ -1080,7 +1128,7 @@ func issueTickets(ctx context.Context, tx pgx.Tx, bookingID string) error {
 					return err
 				}
 			}
-			payload, _ := json.Marshal(map[string]string{"booking_id": bookingID, "qr_token": token})
+			payload, _ := json.Marshal(map[string]string{"booking_id": bookingID, "ticket_id": ticketID, "qr_token": token})
 			if _, err = tx.Exec(ctx, `INSERT INTO notifications(user_id,channel,status,template,payload) VALUES($1,'email','queued','ticket_issued',$2::jsonb)`, owner, string(payload)); err != nil {
 				return err
 			}
@@ -1114,9 +1162,23 @@ func (s *Server) verifyTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var ticketID, owner string
-	e = tx.QueryRow(r.Context(), `SELECT t.id,t.owner_id FROM tickets t JOIN ticket_types tt ON tt.id=t.ticket_type_id WHERE t.qr_token_hash=encode(digest($1,'sha256'),'hex') AND t.status IN ('active','transferred') AND (tt.event_id=NULLIF($2,'')::uuid OR $2='') FOR UPDATE OF t`, q.QRToken, q.EventID).Scan(&ticketID, &owner)
+	var ticketID, owner, bookingID, eventID, ticketTypeID, ticketHash, signature string
+	var integrityVersion int16
+	e = tx.QueryRow(r.Context(), `SELECT t.id,t.owner_id,t.booking_id,b.event_id,t.ticket_type_id,t.ticket_hash,t.ticket_signature,t.integrity_version
+		FROM tickets t JOIN ticket_types tt ON tt.id=t.ticket_type_id JOIN bookings b ON b.id=t.booking_id
+		WHERE t.qr_token_hash=encode(digest($1,'sha256'),'hex') AND t.status IN ('active','transferred')
+		AND (tt.event_id=NULLIF($2,'')::uuid OR $2='') FOR UPDATE OF t`, q.QRToken, q.EventID).Scan(&ticketID, &owner, &bookingID, &eventID, &ticketTypeID, &ticketHash, &signature, &integrityVersion)
 	valid := e == nil
+	if valid && integrityVersion == 1 {
+		canonical := ticketcrypto.Data{Version: 1, TicketID: ticketID, BookingID: bookingID, EventID: eventID, TicketTypeID: ticketTypeID, OwnerID: owner}
+		if len(s.cfg.TicketSigningPrivateKey) == ed25519.PrivateKeySize {
+			publicKey := s.cfg.TicketSigningPrivateKey.Public().(ed25519.PublicKey)
+			valid = ticketcrypto.Verify(canonical, ticketHash, signature, publicKey)
+		} else {
+			computedHash, _, hashErr := ticketcrypto.Hash(canonical)
+			valid = hashErr == nil && computedHash == ticketHash
+		}
+	}
 	if valid {
 		var exists bool
 		_ = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM gate_scans WHERE device_id=$1 AND scan_id=$2)`, id, q.ScanID).Scan(&exists)

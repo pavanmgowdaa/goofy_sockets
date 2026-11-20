@@ -1,15 +1,19 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"github.com/joho/godotenv"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
 	HTTPAddr, DatabaseURL, JWTSecret, RazorpayKeyID, RazorpayKeySecret, RazorpayWebhookSecret, RazorpayBaseURL, SMTPHost, SMTPUsername, SMTPPassword, SMTPFrom, QuaiRPCURL, QuaiContractAddress, QuaiBridgeURL, QuaiBridgeToken, DeviceAPIKeyPepper string
+	TicketSigningPrivateKey                                                                                                                                                                                                                         ed25519.PrivateKey
 	AccessTTL, RefreshTTL                                                                                                                                                                                                                           time.Duration
 	QuaiChainID                                                                                                                                                                                                                                     int64
 	RateLimitRPS                                                                                                                                                                                                                                    float64
@@ -30,6 +34,16 @@ func Load() (Config, error) {
 	}
 	if c.QuaiBridgeToken != "" && len(c.QuaiBridgeToken) < 32 {
 		return c, errors.New("QUAI_BRIDGE_TOKEN must be at least 32 characters when configured")
+	}
+	if key := os.Getenv("TICKET_SIGNING_PRIVATE_KEY"); key != "" {
+		decoded, err := base64.StdEncoding.DecodeString(key)
+		if err != nil || len(decoded) != ed25519.PrivateKeySize {
+			return c, errors.New("TICKET_SIGNING_PRIVATE_KEY must be base64-encoded Ed25519 private key bytes")
+		}
+		c.TicketSigningPrivateKey = ed25519.PrivateKey(decoded)
+	}
+	if strings.EqualFold(os.Getenv("APP_ENV"), "production") && len(c.TicketSigningPrivateKey) != ed25519.PrivateKeySize {
+		return c, errors.New("TICKET_SIGNING_PRIVATE_KEY is required in production")
 	}
 	if (c.RazorpayKeyID != "" || c.RazorpayKeySecret != "" || c.RazorpayWebhookSecret != "") && (c.RazorpayKeyID == "" || c.RazorpayKeySecret == "" || c.RazorpayWebhookSecret == "") {
 		return c, errors.New("all three Razorpay credentials must be configured together")
