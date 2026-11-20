@@ -45,6 +45,39 @@ paths:
       summary: Create a draft event
       responses:
         '201': { description: Created }
+  /v1/admin/users/{id}/verify-organizer:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Verify an organizer account (administrator only)
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Organizer verified }
+        '403': { description: Administrator role required }
+  /v1/me/tickets:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: List tickets owned by the authenticated user
+      responses:
+        '200': { description: Ticket list; QR secrets are not returned }
+  /v1/tickets/{id}/transfer:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Transfer an eligible ticket to a user with a linked Quai wallet
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipient_user_id]
+              properties:
+                recipient_user_id: { type: string, format: uuid }
+      responses:
+        '202': { description: Ownership transfer accepted and chain update queued }
+        '409': { description: Ticket or recipient is not eligible }
   /v1/events/{id}/ticket-types:
     get:
       summary: List published event ticket types and current availability
@@ -75,6 +108,15 @@ paths:
       summary: Create a Razorpay order for a pending booking
       responses:
         '201': { description: Razorpay order }
+  /v1/bookings/{id}/refund:
+    post:
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      summary: Request a full refund for an eligible paid booking
+      responses:
+        '202': { description: Refund accepted for background processing }
+        '409': { description: Tickets are no longer eligible for refund }
   /v1/gate/verify:
     post:
       security: [{ deviceKey: [] }]

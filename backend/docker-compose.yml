@@ -10,6 +10,9 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./migrations/000001_init.up.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
       - ./migrations/000002_booking_reservations.up.sql:/docker-entrypoint-initdb.d/002-booking-reservations.sql:ro
+      - ./migrations/000003_abuse_controls.up.sql:/docker-entrypoint-initdb.d/003-abuse-controls.sql:ro
+      - ./migrations/000004_payment_attempts.up.sql:/docker-entrypoint-initdb.d/004-payment-attempts.sql:ro
+      - ./migrations/000005_quai_wallets.up.sql:/docker-entrypoint-initdb.d/005-quai-wallets.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U fairpass -d fairpass"]
       interval: 5s
@@ -20,9 +23,23 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://fairpass:fairpass@db:5432/fairpass?sslmode=disable
+      QUAI_BRIDGE_URL: http://quai-bridge:8090
+      QUAI_BRIDGE_TOKEN: ${QUAI_BRIDGE_TOKEN:-}
+      QUAI_CONTRACT_ADDRESS: ${QUAI_CONTRACT_ADDRESS:-}
+      QUAI_PRIVATE_KEY: ""
     ports: ["8080:8080"]
     depends_on:
       db:
         condition: service_healthy
+  quai-bridge:
+    build: ./quai-bridge
+    env_file: .env
+    environment:
+      QUAI_RPC_URL: ${QUAI_RPC_URL:-https://orchard.rpc.quai.network}
+      QUAI_PRIVATE_KEY: ${QUAI_PRIVATE_KEY:-}
+      QUAI_CONTRACT_ADDRESS: ${QUAI_CONTRACT_ADDRESS:-}
+      QUAI_BRIDGE_TOKEN: ${QUAI_BRIDGE_TOKEN:-}
+      QUAI_CONFIRMATIONS: ${QUAI_CONFIRMATIONS:-1}
+    expose: ["8090"]
 volumes:
   pgdata:

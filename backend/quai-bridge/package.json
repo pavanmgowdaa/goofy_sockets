@@ -1,0 +1,8 @@
+{
+  "name": "fairpass-quai-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "test": "node --test", "compile-contract": "node deploy.mjs --compile-only", "deploy-contract": "node deploy.mjs" },
+  "dependencies": { "quais": "1.0.0-alpha.55", "solc": "0.8.20" },
+  "overrides": { "tmp": "^0.2.6" }
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/fairpass/backend/internal/config"
 	"github.com/fairpass/backend/internal/db"
 	"github.com/fairpass/backend/internal/httpapi"
+	"github.com/fairpass/backend/internal/maintenance"
 )
 
 func main() {
@@ -25,6 +26,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pool.Close()
+	go maintenance.Run(ctx, pool, cfg)
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.New(cfg, pool), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()

@@ -10,14 +10,17 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fairpass/backend/internal/auth"
 	"github.com/fairpass/backend/internal/config"
+	"github.com/fairpass/backend/internal/payments"
+	"github.com/fairpass/backend/internal/quai"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,12 +29,6 @@ type Server struct {
 	db  *pgxpool.Pool
 	mux *http.ServeMux
 }
-
-var rateMu sync.Mutex
-var rateWindows = map[string]struct {
-	start time.Time
-	count int
-}{}
 
 func New(c config.Config, p *pgxpool.Pool) http.Handler {
 	s := &Server{cfg: c, db: p, mux: http.NewServeMux()}
@@ -43,7 +40,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/auth/register", s.register)
 	s.mux.HandleFunc("POST /v1/auth/login", s.login)
 	s.mux.HandleFunc("POST /v1/auth/refresh", s.refresh)
+	s.mux.Handle("POST /v1/auth/logout", s.protect(http.HandlerFunc(s.logout)))
 	s.mux.Handle("GET /v1/me", s.protect(http.HandlerFunc(s.me)))
+	s.mux.Handle("GET /v1/me/tickets", s.protect(http.HandlerFunc(s.myTickets)))
+	s.mux.Handle("PUT /v1/me/wallet", s.protect(http.HandlerFunc(s.setWallet)))
+	s.mux.Handle("POST /v1/tickets/{id}/transfer", s.protect(http.HandlerFunc(s.transferTicket)))
+	s.mux.Handle("POST /v1/admin/users/{id}/verify-organizer", s.protect(s.adminOnly(http.HandlerFunc(s.verifyOrganizer))))
 	s.mux.Handle("POST /v1/events", s.protect(http.HandlerFunc(s.createEvent)))
 	s.mux.Handle("POST /v1/events/{id}/ticket-types", s.protect(http.HandlerFunc(s.createTicketType)))
 	s.mux.HandleFunc("GET /v1/events", s.events)
@@ -51,6 +53,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /v1/events/{id}/publish", s.protect(http.HandlerFunc(s.publishEvent)))
 	s.mux.Handle("POST /v1/bookings", s.protect(http.HandlerFunc(s.book)))
 	s.mux.Handle("POST /v1/bookings/{id}/payment-order", s.protect(http.HandlerFunc(s.paymentOrder)))
+	s.mux.Handle("POST /v1/bookings/{id}/refund", s.protect(http.HandlerFunc(s.requestRefund)))
 	s.mux.HandleFunc("POST /v1/payments/razorpay/webhook", s.webhook)
 	s.mux.Handle("POST /v1/gate/verify", s.deviceAuth(http.HandlerFunc(s.verifyTicket)))
 	s.mux.Handle("POST /v1/gate/readings", s.deviceAuth(http.HandlerFunc(s.readings)))
@@ -98,7 +101,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "email already registered")
 		return
 	}
-	s.tokens(w, id, role)
+	s.tokens(r.Context(), w, id, role)
 }
 
 type loginRequest struct {
@@ -108,36 +111,84 @@ type loginRequest struct {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var q loginRequest
-	if decode(r, &q) != nil {
+	if decode(r, &q) != nil || strings.TrimSpace(q.Email) == "" || q.Password == "" {
 		writeError(w, 400, "invalid request")
 		return
 	}
+	accountKey := auth.HMACSHA256Hex(s.cfg.JWTSecret, []byte("login:"+strings.ToLower(strings.TrimSpace(q.Email))))
+	var blocked bool
+	e := s.db.QueryRow(r.Context(), `SELECT COALESCE(blocked_until>now(),false) FROM login_throttles WHERE identifier_hash=$1`, accountKey).Scan(&blocked)
+	if e != nil && !errors.Is(e, pgx.ErrNoRows) {
+		writeError(w, 503, "authentication temporarily unavailable")
+		return
+	}
+	if blocked {
+		writeError(w, 429, "too many failed login attempts")
+		return
+	}
 	var id, hash, role string
-	e := s.db.QueryRow(r.Context(), `SELECT id,password_hash,role FROM users WHERE email=lower($1) AND status='active'`, q.Email).Scan(&id, &hash, &role)
-	if e != nil || !auth.CheckPassword(hash, q.Password) {
+	e = s.db.QueryRow(r.Context(), `SELECT id,password_hash,role FROM users WHERE email=lower($1) AND status='active'`, q.Email).Scan(&id, &hash, &role)
+	if errors.Is(e, pgx.ErrNoRows) || e == nil && !auth.CheckPassword(hash, q.Password) {
+		var justBlocked bool
+		if e = s.recordLoginFailure(r.Context(), accountKey, &justBlocked); e != nil {
+			writeError(w, 503, "authentication temporarily unavailable")
+			return
+		}
+		if justBlocked {
+			writeError(w, 429, "too many failed login attempts")
+			return
+		}
 		writeError(w, 401, "invalid credentials")
 		return
 	}
+	if e != nil {
+		writeError(w, 503, "authentication temporarily unavailable")
+		return
+	}
+	_, _ = s.db.Exec(r.Context(), `DELETE FROM login_throttles WHERE identifier_hash=$1`, accountKey)
 	_, _ = s.db.Exec(r.Context(), `UPDATE users SET last_login_at=now() WHERE id=$1`, id)
-	s.tokens(w, id, role)
+	s.tokens(r.Context(), w, id, role)
 }
-func (s *Server) tokens(w http.ResponseWriter, id, role string) {
+
+func (s *Server) recordLoginFailure(ctx context.Context, key string, blocked *bool) error {
+	return s.db.QueryRow(ctx, `INSERT INTO login_throttles(identifier_hash,failed_attempts,window_started_at,blocked_until)
+		VALUES($1,1,now(),CASE WHEN $2<=1 THEN now()+$3::interval ELSE NULL END)
+		ON CONFLICT(identifier_hash) DO UPDATE SET
+		failed_attempts=CASE WHEN login_throttles.window_started_at<now()-$3::interval THEN 1 ELSE login_throttles.failed_attempts+1 END,
+		window_started_at=CASE WHEN login_throttles.window_started_at<now()-$3::interval THEN now() ELSE login_throttles.window_started_at END,
+		blocked_until=CASE WHEN login_throttles.window_started_at<now()-$3::interval THEN CASE WHEN $2<=1 THEN now()+$3::interval ELSE NULL END
+			WHEN login_throttles.failed_attempts+1 >= $2 THEN now()+$3::interval ELSE login_throttles.blocked_until END,
+		updated_at=now()
+		RETURNING COALESCE(blocked_until>now(),false)`, key, s.cfg.LoginMaxAttempts, s.cfg.LoginLockout.String()).Scan(blocked)
+}
+
+type tokenWriter interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func (s *Server) tokenPair(ctx context.Context, db tokenWriter, id, role string) (map[string]any, error) {
 	a, e := auth.Token(s.cfg.JWTSecret, id, role, s.cfg.AccessTTL)
 	if e != nil {
-		writeError(w, 500, "token creation failed")
-		return
+		return nil, e
 	}
 	raw, e := auth.RandomToken()
 	if e != nil {
-		writeError(w, 500, "token creation failed")
-		return
+		return nil, e
 	}
-	_, e = s.db.Exec(context.Background(), `INSERT INTO refresh_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+$3::interval)`, id, auth.SHA256Hex([]byte(raw)), s.cfg.RefreshTTL.String())
+	_, e = db.Exec(ctx, `INSERT INTO refresh_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+$3::interval)`, id, auth.SHA256Hex([]byte(raw)), s.cfg.RefreshTTL.String())
 	if e != nil {
+		return nil, e
+	}
+	return map[string]any{"access_token": a, "refresh_token": raw, "token_type": "Bearer", "expires_in": int(s.cfg.AccessTTL.Seconds())}, nil
+}
+
+func (s *Server) tokens(ctx context.Context, w http.ResponseWriter, id, role string) {
+	pair, err := s.tokenPair(ctx, s.db, id, role)
+	if err != nil {
 		writeError(w, 500, "token creation failed")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"access_token": a, "refresh_token": raw, "token_type": "Bearer", "expires_in": int(s.cfg.AccessTTL.Seconds())})
+	writeJSON(w, 200, pair)
 }
 func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	var q struct {
@@ -148,14 +199,40 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h := auth.SHA256Hex([]byte(q.RefreshToken))
+	tx, e := s.db.Begin(r.Context())
+	if e != nil {
+		writeError(w, 503, "authentication temporarily unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
 	var id, role string
-	e := s.db.QueryRow(r.Context(), `SELECT u.id,u.role FROM refresh_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.expires_at>now() AND t.revoked_at IS NULL`, h).Scan(&id, &role)
+	e = tx.QueryRow(r.Context(), `SELECT u.id,u.role FROM refresh_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.expires_at>now() AND t.revoked_at IS NULL AND u.status='active' FOR UPDATE OF t`, h).Scan(&id, &role)
 	if e != nil {
 		writeError(w, 401, "invalid refresh token")
 		return
 	}
-	_, _ = s.db.Exec(r.Context(), `UPDATE refresh_tokens SET revoked_at=now() WHERE token_hash=$1`, h)
-	s.tokens(w, id, role)
+	if _, e = tx.Exec(r.Context(), `UPDATE refresh_tokens SET revoked_at=now() WHERE token_hash=$1`, h); e != nil {
+		writeError(w, 503, "token rotation failed")
+		return
+	}
+	pair, e := s.tokenPair(r.Context(), tx, id, role)
+	if e != nil {
+		writeError(w, 503, "token rotation failed")
+		return
+	}
+	if e = tx.Commit(r.Context()); e != nil {
+		writeError(w, 503, "token rotation failed")
+		return
+	}
+	writeJSON(w, 200, pair)
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.db.Exec(r.Context(), `UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID(r)); err != nil {
+		writeError(w, 503, "logout failed")
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "logged_out"})
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	id := userID(r)
@@ -168,6 +245,171 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	}
 	out = map[string]any{"id": id, "name": name, "email": email, "role": role}
 	writeJSON(w, 200, out)
+}
+
+func (s *Server) myTickets(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `SELECT t.id,e.id,e.title,tt.name,t.status,t.issued_at
+		FROM tickets t JOIN bookings b ON b.id=t.booking_id JOIN events e ON e.id=b.event_id
+		JOIN ticket_types tt ON tt.id=t.ticket_type_id
+		WHERE t.owner_id=$1 AND t.status IN ('active','transferred','redeemed')
+		ORDER BY t.issued_at DESC LIMIT 200`, userID(r))
+	if err != nil {
+		writeError(w, 500, "could not load tickets")
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id, eventID, eventTitle, typeName, status string
+		var issued time.Time
+		if err = rows.Scan(&id, &eventID, &eventTitle, &typeName, &status, &issued); err != nil {
+			writeError(w, 500, "could not load tickets")
+			return
+		}
+		items = append(items, map[string]any{"id": id, "event_id": eventID, "event_title": eventTitle, "ticket_type": typeName, "status": status, "issued_at": issued})
+	}
+	if err = rows.Err(); err != nil {
+		writeError(w, 500, "could not load tickets")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (s *Server) transferTicket(w http.ResponseWriter, r *http.Request) {
+	var q struct {
+		RecipientID string `json:"recipient_user_id"`
+	}
+	if decode(r, &q) != nil || q.RecipientID == "" || q.RecipientID == userID(r) {
+		writeError(w, 400, "a different recipient_user_id is required")
+		return
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, 503, "ticket transfer unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var ticketID, ticketHash, currentStatus, chainID, recipientWallet string
+	err = tx.QueryRow(r.Context(), `SELECT t.id,t.ticket_hash,t.status,COALESCE(t.onchain_id,'') FROM tickets t
+		JOIN bookings b ON b.id=t.booking_id JOIN events ev ON ev.id=b.event_id
+		WHERE t.id=$1 AND t.owner_id=$2 AND ev.starts_at>now()
+		AND NOT EXISTS(SELECT 1 FROM blockchain_transactions bt WHERE bt.ticket_id=t.id AND bt.status IN ('queued','submitted')) FOR UPDATE OF t`, r.PathValue("id"), userID(r)).Scan(&ticketID, &ticketHash, &currentStatus, &chainID)
+	if err != nil || (currentStatus != "active" && currentStatus != "transferred") {
+		writeError(w, 404, "eligible owned ticket not found")
+		return
+	}
+	err = tx.QueryRow(r.Context(), `SELECT COALESCE(wallet_address,'') FROM users WHERE id=$1 AND status='active'`, q.RecipientID).Scan(&recipientWallet)
+	if err != nil {
+		writeError(w, 404, "active recipient not found")
+		return
+	}
+	if recipientWallet == "" {
+		writeError(w, 409, "recipient must link a Quai wallet before receiving a ticket")
+		return
+	}
+	newQR, err := auth.RandomToken()
+	if err != nil {
+		writeError(w, 500, "ticket transfer failed")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `INSERT INTO ticket_transfers(ticket_id,from_user_id,to_user_id) VALUES($1,$2,$3)`, ticketID, userID(r), q.RecipientID)
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `UPDATE tickets SET owner_id=$2,qr_token_hash=$3,status='transferred' WHERE id=$1`, ticketID, q.RecipientID, auth.SHA256Hex([]byte(newQR)))
+	}
+	operation := "register"
+	if chainID != "" {
+		operation = "transfer"
+	}
+	if err == nil {
+		err = enqueueBlockchain(r.Context(), tx, ticketID, operation, recipientWallet)
+	}
+	payload, _ := json.Marshal(map[string]string{"ticket_id": ticketID, "qr_token": newQR})
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO notifications(user_id,channel,status,template,payload) VALUES($1,'email','queued','ticket_transferred',$2::jsonb)`, q.RecipientID, string(payload))
+	}
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_type,actor_id,action,entity_type,entity_id,metadata) VALUES('user',$1,'ticket_transfer','ticket',$2,jsonb_build_object('recipient_user_id',$3))`, userID(r), ticketID, q.RecipientID)
+	}
+	if err != nil {
+		writeError(w, 500, "ticket transfer failed")
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		writeError(w, 500, "ticket transfer failed")
+		return
+	}
+	writeJSON(w, 202, map[string]string{"ticket_id": ticketID, "status": "transferred", "blockchain": "queued"})
+}
+
+func (s *Server) setWallet(w http.ResponseWriter, r *http.Request) {
+	var q struct {
+		Address string `json:"address"`
+	}
+	if decode(r, &q) != nil || q.Address == "" {
+		writeError(w, 400, "address required")
+		return
+	}
+	client := quai.Client{BaseURL: s.cfg.QuaiBridgeURL, Token: s.cfg.QuaiBridgeToken}
+	valid, err := client.ValidateAddress(r.Context(), q.Address)
+	if err != nil {
+		writeError(w, 503, "Quai wallet validation unavailable")
+		return
+	}
+	if !valid {
+		writeError(w, 400, "invalid Quai address")
+		return
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, 503, "wallet update unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var existing string
+	err = tx.QueryRow(r.Context(), `SELECT COALESCE(wallet_address,'') FROM users WHERE id=$1 FOR UPDATE`, userID(r)).Scan(&existing)
+	if err != nil {
+		writeError(w, 404, "user not found")
+		return
+	}
+	if existing != "" && !strings.EqualFold(existing, q.Address) {
+		writeError(w, 409, "wallet address cannot be changed after linking")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `UPDATE users SET wallet_address=$2,updated_at=now() WHERE id=$1`, userID(r), q.Address)
+	if err == nil {
+		rows, e := tx.Query(r.Context(), `SELECT t.id FROM tickets t WHERE t.owner_id=$1 AND t.status IN ('active','transferred') AND t.onchain_id IS NULL
+			AND NOT EXISTS(SELECT 1 FROM blockchain_transactions b WHERE b.ticket_id=t.id AND b.operation='register' AND b.status IN ('queued','submitted'))`, userID(r))
+		if e != nil {
+			err = e
+		} else {
+			ids := []string{}
+			for rows.Next() {
+				var id string
+				if e = rows.Scan(&id); e != nil {
+					err = e
+					break
+				}
+				ids = append(ids, id)
+			}
+			rows.Close()
+			if err == nil {
+				for _, id := range ids {
+					if err = enqueueBlockchain(r.Context(), tx, id, "register", q.Address); err != nil {
+						break
+					}
+				}
+			}
+		}
+	}
+	if err != nil {
+		writeError(w, 500, "wallet update failed")
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		writeError(w, 500, "wallet update failed")
+		return
+	}
+	writeJSON(w, 200, map[string]string{"wallet_address": q.Address, "blockchain": "registration_queued"})
 }
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if role(r) != "organizer" && role(r) != "administrator" {
@@ -197,12 +439,40 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]string{"id": id, "status": "draft"})
 }
 func (s *Server) publishEvent(w http.ResponseWriter, r *http.Request) {
-	_, e := s.db.Exec(r.Context(), `UPDATE events SET status='published',updated_at=now() WHERE id=$1 AND (organizer_id=$2 OR $3='administrator') AND status='draft'`, r.PathValue("id"), userID(r), role(r))
+	result, e := s.db.Exec(r.Context(), `UPDATE events e SET status='published',updated_at=now() WHERE e.id=$1 AND (e.organizer_id=$2 OR $3='administrator') AND e.status='draft'
+		AND ($3='administrator' OR EXISTS(SELECT 1 FROM users u WHERE u.id=e.organizer_id AND u.organizer_verified))`, r.PathValue("id"), userID(r), role(r))
 	if e != nil {
 		writeError(w, 500, "publish failed")
 		return
 	}
+	if result.RowsAffected() == 0 {
+		writeError(w, 409, "event is not an owned draft or organizer is not verified")
+		return
+	}
 	writeJSON(w, 200, map[string]string{"status": "published"})
+}
+
+func (s *Server) adminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if role(r) != "administrator" {
+			writeError(w, 403, "administrator role required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) verifyOrganizer(w http.ResponseWriter, r *http.Request) {
+	result, err := s.db.Exec(r.Context(), `UPDATE users SET organizer_verified=true,updated_at=now() WHERE id=$1 AND role='organizer' AND status='active'`, r.PathValue("id"))
+	if err != nil {
+		writeError(w, 500, "organizer verification failed")
+		return
+	}
+	if result.RowsAffected() == 0 {
+		writeError(w, 404, "active organizer not found")
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "verified"})
 }
 func (s *Server) createTicketType(w http.ResponseWriter, r *http.Request) {
 	var q struct {
@@ -409,48 +679,114 @@ func (s *Server) paymentOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "payments are not configured")
 		return
 	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, 503, "payment service unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
 	var amount int64
 	var currency string
-	err := s.db.QueryRow(r.Context(), `SELECT total_minor,currency FROM bookings WHERE id=$1 AND user_id=$2 AND status='pending' AND (expires_at IS NULL OR expires_at>now())`, r.PathValue("id"), userID(r)).Scan(&amount, &currency)
+	err = tx.QueryRow(r.Context(), `SELECT total_minor,currency FROM bookings WHERE id=$1 AND user_id=$2 AND status='pending' AND (expires_at IS NULL OR expires_at>now()) FOR UPDATE`, r.PathValue("id"), userID(r)).Scan(&amount, &currency)
 	if err != nil {
 		writeError(w, 404, "pending booking not found")
 		return
 	}
 	var existing string
-	err = s.db.QueryRow(r.Context(), `SELECT provider_order_id FROM payments WHERE booking_id=$1 AND status='created'`, r.PathValue("id")).Scan(&existing)
+	err = tx.QueryRow(r.Context(), `SELECT provider_order_id FROM payments WHERE booking_id=$1 AND status='created'`, r.PathValue("id")).Scan(&existing)
 	if err == nil {
 		writeJSON(w, 200, map[string]any{"order_id": existing, "amount_minor": amount, "currency": currency, "key_id": s.cfg.RazorpayKeyID})
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"amount": amount, "currency": currency, "receipt": r.PathValue("id"), "notes": map[string]string{"booking_id": r.PathValue("id")}})
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "https://api.razorpay.com/v1/orders", strings.NewReader(string(body)))
+	if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, 500, "could not load payment order")
+		return
+	}
+	client := payments.Razorpay{KeyID: s.cfg.RazorpayKeyID, Secret: s.cfg.RazorpayKeySecret, BaseURL: s.cfg.RazorpayBaseURL}
+	result, err := client.CreateOrder(r.Context(), amount, strings.TrimSpace(currency), r.PathValue("id"), map[string]string{"booking_id": r.PathValue("id")})
 	if err != nil {
-		writeError(w, 500, "could not create payment order")
+		writeError(w, 502, "payment provider unavailable or rejected the order")
 		return
 	}
-	req.SetBasicAuth(s.cfg.RazorpayKeyID, s.cfg.RazorpayKeySecret)
-	req.Header.Set("Content-Type", "application/json")
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		writeError(w, 502, "payment provider unavailable")
-		return
-	}
-	defer resp.Body.Close()
-	var result struct {
-		ID    string          `json:"id"`
-		Error json.RawMessage `json:"error"`
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result) != nil || result.ID == "" {
-		writeError(w, 502, "payment order rejected")
-		return
-	}
-	_, err = s.db.Exec(r.Context(), `INSERT INTO payments(booking_id,provider_order_id,status,amount_minor,currency) VALUES($1,$2,'created',$3,$4) ON CONFLICT(booking_id) DO UPDATE SET provider_order_id=EXCLUDED.provider_order_id,status='created',updated_at=now()`, r.PathValue("id"), result.ID, amount, currency)
+	_, err = tx.Exec(r.Context(), `INSERT INTO payments(booking_id,provider_order_id,status,amount_minor,currency) VALUES($1,$2,'created',$3,$4) ON CONFLICT(booking_id) DO UPDATE SET provider_order_id=EXCLUDED.provider_order_id,status='created',updated_at=now()`, r.PathValue("id"), result.ID, amount, strings.TrimSpace(currency))
 	if err != nil {
 		writeError(w, 500, "could not save payment order")
 		return
 	}
+	if err = tx.Commit(r.Context()); err != nil {
+		writeError(w, 500, "could not save payment order")
+		return
+	}
 	writeJSON(w, 201, map[string]any{"order_id": result.ID, "amount_minor": amount, "currency": currency, "key_id": s.cfg.RazorpayKeyID})
+}
+
+func (s *Server) requestRefund(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.RazorpayKeyID == "" || s.cfg.RazorpayKeySecret == "" {
+		writeError(w, 503, "payments are not configured")
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decode(r, &body); err != nil {
+			writeError(w, 400, "invalid request")
+			return
+		}
+	}
+	if len(body.Reason) > 500 {
+		writeError(w, 400, "reason is too long")
+		return
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, 503, "refund service unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var paymentID, providerPaymentID, paymentStatus string
+	var amount int64
+	err = tx.QueryRow(r.Context(), `SELECT p.id,COALESCE(p.provider_payment_id,''),p.status,p.amount_minor
+		FROM bookings b JOIN payments p ON p.booking_id=b.id
+		WHERE b.id=$1 AND b.user_id=$2 AND b.status='paid'
+		FOR UPDATE OF b,p`, r.PathValue("id"), userID(r)).Scan(&paymentID, &providerPaymentID, &paymentStatus, &amount)
+	if err != nil {
+		writeError(w, 404, "paid booking not found")
+		return
+	}
+	if paymentStatus != "captured" || providerPaymentID == "" {
+		writeError(w, 409, "payment is not refundable")
+		return
+	}
+	var blocked bool
+	err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM tickets t WHERE t.booking_id=$1 AND (t.status IN ('redeemed','transferred') OR EXISTS(SELECT 1 FROM ticket_transfers x WHERE x.ticket_id=t.id)))`, r.PathValue("id")).Scan(&blocked)
+	if err != nil {
+		writeError(w, 500, "refund check failed")
+		return
+	}
+	if blocked {
+		writeError(w, 409, "tickets that were redeemed or transferred cannot be refunded here")
+		return
+	}
+	var refundID, status string
+	err = tx.QueryRow(r.Context(), `SELECT id,status FROM refunds WHERE payment_id=$1 AND provider_payment_id=$2 AND status NOT IN ('failed') ORDER BY created_at DESC LIMIT 1`, paymentID, providerPaymentID).Scan(&refundID, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(r.Context(), `INSERT INTO refunds(payment_id,provider_payment_id,amount_minor,status,reason)
+			VALUES($1,$2,$3,'requires_refund',$4) RETURNING id,status`, paymentID, providerPaymentID, amount, body.Reason).Scan(&refundID, &status)
+		if err == nil {
+			payload, _ := json.Marshal(map[string]string{"booking_id": r.PathValue("id"), "refund_id": refundID, "reason": body.Reason})
+			_, err = tx.Exec(r.Context(), `INSERT INTO notifications(user_id,channel,status,template,payload) VALUES($1,'email','queued','refund_requested',$2::jsonb)`, userID(r), string(payload))
+		}
+	}
+	if err != nil {
+		writeError(w, 500, "could not queue refund")
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		writeError(w, 500, "could not queue refund")
+		return
+	}
+	writeJSON(w, 202, map[string]string{"refund_id": refundID, "status": status})
 }
 
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
@@ -476,14 +812,28 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 					Currency string `json:"currency"`
 				} `json:"entity"`
 			} `json:"payment"`
+			Refund struct {
+				Entity struct {
+					ID        string `json:"id"`
+					PaymentID string `json:"payment_id"`
+					Status    string `json:"status"`
+				} `json:"entity"`
+			} `json:"refund"`
 		} `json:"payload"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
 		writeError(w, 400, "invalid webhook")
 		return
 	}
-	if payload.Event != "payment.captured" && payload.Event != "payment.failed" {
+	supportedPaymentEvent := payload.Event == "payment.captured" || payload.Event == "payment.failed"
+	supportedRefundEvent := payload.Event == "refund.processed" || payload.Event == "refund.failed"
+	if !supportedPaymentEvent && !supportedRefundEvent {
 		writeJSON(w, 200, map[string]string{"status": "ignored"})
+		return
+	}
+	eventID := r.Header.Get("X-Razorpay-Event-Id")
+	if eventID == "" {
+		writeError(w, 400, "missing Razorpay event identifier")
 		return
 	}
 	ctx := r.Context()
@@ -493,6 +843,35 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
+	var hookID string
+	e = tx.QueryRow(ctx, `INSERT INTO webhook_events(provider,provider_event_id,event_type)
+		VALUES('razorpay',$1,$2) ON CONFLICT(provider,provider_event_id) DO NOTHING RETURNING id`, eventID, payload.Event).Scan(&hookID)
+	if errors.Is(e, pgx.ErrNoRows) {
+		writeJSON(w, 200, map[string]string{"status": "duplicate"})
+		return
+	}
+	if e != nil {
+		writeError(w, 500, "webhook processing failed")
+		return
+	}
+	if supportedRefundEvent {
+		refund := payload.Payload.Refund.Entity
+		e = applyRefundWebhook(ctx, tx, refund.ID, refund.PaymentID, refund.Status)
+		if e != nil {
+			writeError(w, 500, "refund webhook processing failed")
+			return
+		}
+		if _, e = tx.Exec(ctx, `UPDATE webhook_events SET status='processed',processed_at=now() WHERE id=$1`, hookID); e != nil {
+			writeError(w, 500, "webhook processing failed")
+			return
+		}
+		if e = tx.Commit(ctx); e != nil {
+			writeError(w, 500, "webhook processing failed")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "processed"})
+		return
+	}
 	p := payload.Payload.Payment.Entity
 	var bookingID, paymentStatus, paymentCurrency, bookingStatus, bookingCurrency string
 	var paymentAmount, bookingAmount int64
@@ -507,29 +886,35 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "webhook processing failed")
 		return
 	}
-	if payload.Event == "payment.captured" && (p.Amount != paymentAmount || paymentAmount != bookingAmount || strings.TrimSpace(p.Currency) != strings.TrimSpace(paymentCurrency) || strings.TrimSpace(paymentCurrency) != strings.TrimSpace(bookingCurrency)) {
-		writeError(w, 400, "captured payment amount or currency does not match booking")
-		return
-	}
-	if paymentStatus == "captured" || paymentStatus == "refunded" {
-		writeJSON(w, 200, map[string]string{"status": "already_processed"})
+	if p.ID == "" || (payload.Event == "payment.captured" && (p.Amount != paymentAmount || paymentAmount != bookingAmount || strings.TrimSpace(p.Currency) != strings.TrimSpace(paymentCurrency) || strings.TrimSpace(paymentCurrency) != strings.TrimSpace(bookingCurrency))) {
+		writeError(w, 400, "payment identity, amount or currency does not match booking")
 		return
 	}
 	if payload.Event == "payment.failed" {
-		_, e = tx.Exec(ctx, `UPDATE payments SET status='failed',provider_payment_id=$2,updated_at=now() WHERE provider_order_id=$1`, p.OrderID, p.ID)
-		if e == nil && bookingStatus == "pending" {
-			var changed string
-			e = tx.QueryRow(ctx, `UPDATE bookings SET status='failed',updated_at=now() WHERE id=$1 AND status='pending' RETURNING id`, bookingID).Scan(&changed)
-			if errors.Is(e, pgx.ErrNoRows) {
-				e = nil
-			}
-			if e == nil && changed != "" {
-				e = releaseBookingReservation(ctx, tx, bookingID)
-			}
+		if paymentStatus != "captured" && paymentStatus != "refunded" {
+			_, e = tx.Exec(ctx, `INSERT INTO payment_attempts(payment_id,provider_payment_id,amount_minor,currency,status)
+				SELECT id,$2,$3,$4,'failed' FROM payments WHERE provider_order_id=$1
+				ON CONFLICT(provider_payment_id) DO UPDATE SET status=CASE WHEN payment_attempts.status='captured' THEN 'captured' ELSE 'failed' END,updated_at=now()`, p.OrderID, p.ID, p.Amount, p.Currency)
 		}
 	} else {
-		_, e = tx.Exec(ctx, `UPDATE payments SET status='captured',provider_payment_id=$2,updated_at=now() WHERE provider_order_id=$1`, p.OrderID, p.ID)
-		if e == nil && bookingStatus == "pending" {
+		if paymentStatus == "captured" || paymentStatus == "refunded" {
+			var primaryPayment string
+			if e = tx.QueryRow(ctx, `SELECT COALESCE(provider_payment_id,'') FROM payments WHERE provider_order_id=$1`, p.OrderID).Scan(&primaryPayment); e == nil && primaryPayment != p.ID {
+				_, e = tx.Exec(ctx, `INSERT INTO payment_attempts(payment_id,provider_payment_id,amount_minor,currency,status)
+					SELECT id,$2,$3,$4,'captured' FROM payments WHERE provider_order_id=$1 ON CONFLICT(provider_payment_id) DO UPDATE SET status='captured',updated_at=now()`, p.OrderID, p.ID, p.Amount, p.Currency)
+				if e == nil {
+					e = queueRefundReview(ctx, tx, bookingID, p.ID, p.Amount)
+				}
+			}
+		} else {
+			_, e = tx.Exec(ctx, `INSERT INTO payment_attempts(payment_id,provider_payment_id,amount_minor,currency,status)
+				SELECT id,$2,$3,$4,'captured' FROM payments WHERE provider_order_id=$1
+				ON CONFLICT(provider_payment_id) DO UPDATE SET status='captured',updated_at=now()`, p.OrderID, p.ID, p.Amount, p.Currency)
+			if e == nil {
+				_, e = tx.Exec(ctx, `UPDATE payments SET status='captured',provider_payment_id=$2,updated_at=now() WHERE provider_order_id=$1`, p.OrderID, p.ID)
+			}
+		}
+		if e == nil && paymentStatus != "captured" && paymentStatus != "refunded" && bookingStatus == "pending" {
 			var changed string
 			e = tx.QueryRow(ctx, `UPDATE bookings SET status='paid',paid_at=now(),updated_at=now() WHERE id=$1 AND status='pending' AND (expires_at IS NULL OR expires_at>now()) RETURNING id`, bookingID).Scan(&changed)
 			if errors.Is(e, pgx.ErrNoRows) {
@@ -546,14 +931,18 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 					e = expireBooking(ctx, tx, bookingID)
 				}
 				if e == nil {
-					e = queueRefundReview(ctx, tx, bookingID)
+					e = queueRefundReview(ctx, tx, bookingID, p.ID, p.Amount)
 				}
 			}
-		} else if e == nil {
-			e = queueRefundReview(ctx, tx, bookingID)
+		} else if e == nil && paymentStatus != "captured" && paymentStatus != "refunded" {
+			e = queueRefundReview(ctx, tx, bookingID, p.ID, p.Amount)
 		}
 	}
 	if e != nil {
+		writeError(w, 500, "webhook processing failed")
+		return
+	}
+	if _, e = tx.Exec(ctx, `UPDATE webhook_events SET status='processed',processed_at=now() WHERE id=$1`, hookID); e != nil {
 		writeError(w, 500, "webhook processing failed")
 		return
 	}
@@ -585,14 +974,16 @@ func releaseBookingReservation(ctx context.Context, tx pgx.Tx, bookingID string)
 	return err
 }
 
-func queueRefundReview(ctx context.Context, tx pgx.Tx, bookingID string) error {
-	var refundID, ownerID string
-	err := tx.QueryRow(ctx, `INSERT INTO refunds(payment_id,amount_minor,status,reason)
-		SELECT p.id,p.amount_minor,'requires_refund','payment captured after booking reservation was no longer active'
-		FROM payments p WHERE p.booking_id=$1
-	AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.payment_id=p.id AND r.status='requires_refund')
-	RETURNING id`, bookingID).Scan(&refundID)
+func queueRefundReview(ctx context.Context, tx pgx.Tx, bookingID, providerPaymentID string, amount int64) error {
+	var paymentID, refundID, ownerID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM payments WHERE booking_id=$1 FOR UPDATE`, bookingID).Scan(&paymentID); err != nil {
+		return err
+	}
+	err := tx.QueryRow(ctx, `SELECT id FROM refunds WHERE payment_id=$1 AND provider_payment_id=$2 AND status NOT IN ('failed') ORDER BY created_at DESC LIMIT 1`, paymentID, providerPaymentID).Scan(&refundID)
 	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `INSERT INTO refunds(payment_id,provider_payment_id,amount_minor,status,reason)
+			VALUES($1,$2,$3,'requires_refund','captured payment requires refund') RETURNING id`, paymentID, providerPaymentID, amount).Scan(&refundID)
+	} else if err == nil {
 		return nil
 	}
 	if err != nil {
@@ -601,17 +992,56 @@ func queueRefundReview(ctx context.Context, tx pgx.Tx, bookingID string) error {
 	if err = tx.QueryRow(ctx, `SELECT user_id FROM bookings WHERE id=$1`, bookingID).Scan(&ownerID); err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]string{"booking_id": bookingID, "refund_id": refundID, "reason": "late_payment_capture"})
+	payload, _ := json.Marshal(map[string]string{"booking_id": bookingID, "refund_id": refundID, "reason": "payment_review"})
 	_, err = tx.Exec(ctx, `INSERT INTO notifications(user_id,channel,status,template,payload)
 		VALUES($1,'email','queued','payment_refund_review',$2::jsonb)`, ownerID, string(payload))
+	return err
+}
+
+func applyRefundWebhook(ctx context.Context, tx pgx.Tx, refundID, providerPaymentID, status string) error {
+	if status != "processed" && status != "failed" {
+		return nil
+	}
+	var localRefundID, bookingID, primaryPaymentID, localPaymentID string
+	err := tx.QueryRow(ctx, `SELECT r.id,p.booking_id,COALESCE(p.provider_payment_id,''),COALESCE(r.provider_payment_id,'')
+		FROM refunds r JOIN payments p ON p.id=r.payment_id
+		WHERE (r.provider_refund_id=$1 AND $1<>'') OR (r.provider_payment_id=$2 AND $2<>'')
+		ORDER BY r.created_at DESC LIMIT 1 FOR UPDATE OF r,p`, refundID, providerPaymentID).Scan(&localRefundID, &bookingID, &primaryPaymentID, &localPaymentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if status == "processed" {
+		_, err = tx.Exec(ctx, `UPDATE refunds SET provider_refund_id=COALESCE(provider_refund_id,NULLIF($2,'')),status='processed',updated_at=now() WHERE id=$1`, localRefundID, refundID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE payment_attempts SET status='refunded',updated_at=now() WHERE provider_payment_id=$1`, localPaymentID)
+		if err != nil {
+			return err
+		}
+		if localPaymentID != "" && localPaymentID == primaryPaymentID {
+			if _, err = tx.Exec(ctx, `UPDATE payments SET status='refunded',updated_at=now() WHERE provider_payment_id=$1`, localPaymentID); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `UPDATE bookings SET status='refunded',updated_at=now() WHERE id=$1 AND status='paid'`, bookingID); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `UPDATE tickets SET status='refunded' WHERE booking_id=$1 AND status IN ('active','transferred')`, bookingID)
+		}
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE refunds SET provider_refund_id=COALESCE(provider_refund_id,NULLIF($2,'')),status='failed',updated_at=now(),last_error='Razorpay reported refund failure' WHERE id=$1`, localRefundID, refundID)
 	return err
 }
 
 // issueTickets creates high entropy QR credentials and stores only their hashes.
 // The notification worker receives the one-time credential for secure delivery.
 func issueTickets(ctx context.Context, tx pgx.Tx, bookingID string) error {
-	var owner string
-	if err := tx.QueryRow(ctx, `SELECT user_id FROM bookings WHERE id=$1`, bookingID).Scan(&owner); err != nil {
+	var owner, wallet string
+	if err := tx.QueryRow(ctx, `SELECT b.user_id,COALESCE(u.wallet_address,'') FROM bookings b JOIN users u ON u.id=b.user_id WHERE b.id=$1`, bookingID).Scan(&owner, &wallet); err != nil {
 		return err
 	}
 	rows, err := tx.Query(ctx, `SELECT ticket_type_id,quantity FROM booking_items WHERE booking_id=$1`, bookingID)
@@ -641,8 +1071,14 @@ func issueTickets(ctx context.Context, tx pgx.Tx, bookingID string) error {
 				return err
 			}
 			digest := auth.SHA256Hex([]byte(token))
-			if _, err = tx.Exec(ctx, `INSERT INTO tickets(booking_id,ticket_type_id,owner_id,ticket_hash,qr_token_hash,status) VALUES($1,$2,$3,$4,$4,'active')`, bookingID, i.typeID, owner, digest); err != nil {
+			var ticketID string
+			if err = tx.QueryRow(ctx, `INSERT INTO tickets(booking_id,ticket_type_id,owner_id,ticket_hash,qr_token_hash,status) VALUES($1,$2,$3,$4,$4,'active') RETURNING id`, bookingID, i.typeID, owner, digest).Scan(&ticketID); err != nil {
 				return err
+			}
+			if wallet != "" {
+				if err = enqueueBlockchain(ctx, tx, ticketID, "register", wallet); err != nil {
+					return err
+				}
 			}
 			payload, _ := json.Marshal(map[string]string{"booking_id": bookingID, "qr_token": token})
 			if _, err = tx.Exec(ctx, `INSERT INTO notifications(user_id,channel,status,template,payload) VALUES($1,'email','queued','ticket_issued',$2::jsonb)`, owner, string(payload)); err != nil {
@@ -651,6 +1087,12 @@ func issueTickets(ctx context.Context, tx pgx.Tx, bookingID string) error {
 		}
 	}
 	return nil
+}
+
+func enqueueBlockchain(ctx context.Context, tx pgx.Tx, ticketID, operation, target string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO blockchain_transactions(ticket_id,operation,target_address,status)
+		VALUES($1,$2,NULLIF($3,''),'queued')`, ticketID, operation, target)
+	return err
 }
 
 type deviceContextKey struct{}
@@ -673,7 +1115,7 @@ func (s *Server) verifyTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var ticketID, owner string
-	e = tx.QueryRow(r.Context(), `SELECT t.id,t.owner_id FROM tickets t JOIN ticket_types tt ON tt.id=t.ticket_type_id WHERE t.qr_token_hash=encode(digest($1,'sha256'),'hex') AND t.status='active' AND (tt.event_id=NULLIF($2,'')::uuid OR $2='') FOR UPDATE OF t`, q.QRToken, q.EventID).Scan(&ticketID, &owner)
+	e = tx.QueryRow(r.Context(), `SELECT t.id,t.owner_id FROM tickets t JOIN ticket_types tt ON tt.id=t.ticket_type_id WHERE t.qr_token_hash=encode(digest($1,'sha256'),'hex') AND t.status IN ('active','transferred') AND (tt.event_id=NULLIF($2,'')::uuid OR $2='') FOR UPDATE OF t`, q.QRToken, q.EventID).Scan(&ticketID, &owner)
 	valid := e == nil
 	if valid {
 		var exists bool
@@ -681,8 +1123,14 @@ func (s *Server) verifyTicket(w http.ResponseWriter, r *http.Request) {
 		if exists {
 			valid = false
 		} else {
-			_, e = tx.Exec(r.Context(), `UPDATE tickets SET status='redeemed',redeemed_at=now(),redeemed_device_id=$2 WHERE id=$1 AND status='active'`, ticketID, id)
+			_, e = tx.Exec(r.Context(), `UPDATE tickets SET status='redeemed',redeemed_at=now(),redeemed_device_id=$2 WHERE id=$1 AND status IN ('active','transferred')`, ticketID, id)
 			valid = e == nil
+			if valid {
+				if _, e = tx.Exec(r.Context(), `INSERT INTO blockchain_transactions(ticket_id,operation,status) SELECT id,'redeem','queued' FROM tickets WHERE id=$1 AND onchain_id IS NOT NULL`, ticketID); e != nil {
+					writeError(w, 500, "scan could not be recorded")
+					return
+				}
+			}
 		}
 	}
 	reason := "valid"
@@ -734,8 +1182,18 @@ func (s *Server) protect(next http.Handler) http.Handler {
 			writeError(w, 401, "unauthorized")
 			return
 		}
+		var currentRole string
+		e = s.db.QueryRow(r.Context(), `SELECT role FROM users WHERE id=$1 AND status='active'`, c.Subject).Scan(&currentRole)
+		if errors.Is(e, pgx.ErrNoRows) {
+			writeError(w, 401, "account is unavailable")
+			return
+		}
+		if e != nil {
+			writeError(w, 503, "authentication temporarily unavailable")
+			return
+		}
 		ctx := context.WithValue(r.Context(), "user_id", c.Subject)
-		ctx = context.WithValue(ctx, "role", c.Role)
+		ctx = context.WithValue(ctx, "role", currentRole)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -765,26 +1223,32 @@ func (s *Server) limit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
-		ip := strings.Split(r.RemoteAddr, ":")[0]
-		key := ip + "/" + r.URL.Path
-		rateMu.Lock()
-		entry := rateWindows[key]
-		now := time.Now()
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			ip = r.RemoteAddr
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) > 2 {
+			parts = parts[:2]
+		}
+		route := strings.Join(parts, "/")
+		key := auth.HMACSHA256Hex(s.cfg.JWTSecret, []byte("rate:"+ip+":"+r.Method+":"+route))
+		var requests int
+		err = s.db.QueryRow(r.Context(), `INSERT INTO rate_limit_buckets(bucket_hash,window_started_at,request_count)
+			VALUES($1,date_trunc('minute',now()),1)
+			ON CONFLICT(bucket_hash) DO UPDATE SET
+			request_count=CASE WHEN rate_limit_buckets.window_started_at<date_trunc('minute',now()) THEN 1 ELSE rate_limit_buckets.request_count+1 END,
+			window_started_at=CASE WHEN rate_limit_buckets.window_started_at<date_trunc('minute',now()) THEN date_trunc('minute',now()) ELSE rate_limit_buckets.window_started_at END,
+			updated_at=now() RETURNING request_count`, key).Scan(&requests)
+		if err != nil {
+			writeError(w, 503, "request protection temporarily unavailable")
+			return
+		}
 		limit := int(s.cfg.RateLimitRPS * 60)
-		if limit < 60 {
+		if limit < 1 {
 			limit = 600
 		}
-		if now.Sub(entry.start) >= time.Minute {
-			entry = struct {
-				start time.Time
-				count int
-			}{start: now}
-		}
-		entry.count++
-		rateWindows[key] = entry
-		blocked := entry.count > limit
-		rateMu.Unlock()
-		if blocked {
+		if requests > limit {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, 429, "rate limit exceeded")
 			return

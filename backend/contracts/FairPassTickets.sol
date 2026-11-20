@@ -19,6 +19,11 @@ contract FairPassTickets {
         Ticket storage t = tickets[ticketId]; require(t.exists && !t.redeemed && t.owner == msg.sender && to != address(0), "invalid transfer");
         t.owner = to; emit Transferred(ticketId, msg.sender, to);
     }
+    /// @notice Platform-mediated ownership change after a verified resale payment.
+    function adminTransfer(bytes32 ticketId, address to) external onlyAdmin {
+        Ticket storage t = tickets[ticketId]; require(t.exists && !t.redeemed && to != address(0), "invalid transfer");
+        address from = t.owner; t.owner = to; emit Transferred(ticketId, from, to);
+    }
     function redeem(bytes32 ticketId) external onlyAdmin {
         Ticket storage t = tickets[ticketId]; require(t.exists && !t.redeemed, "invalid redemption");
         t.redeemed = true; emit Redeemed(ticketId);

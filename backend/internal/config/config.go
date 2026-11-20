@@ -9,21 +9,27 @@ import (
 )
 
 type Config struct {
-	HTTPAddr, DatabaseURL, JWTSecret, RazorpayKeyID, RazorpayKeySecret, RazorpayWebhookSecret, SMTPHost, SMTPUsername, SMTPPassword, SMTPFrom, QuaiRPCURL, QuaiContractAddress, QuaiPrivateKey, DeviceAPIKeyPepper string
-	AccessTTL, RefreshTTL                                                                                                                                                                                          time.Duration
-	QuaiChainID                                                                                                                                                                                                    int64
-	RateLimitRPS                                                                                                                                                                                                   float64
-	MaxTickets                                                                                                                                                                                                     int
+	HTTPAddr, DatabaseURL, JWTSecret, RazorpayKeyID, RazorpayKeySecret, RazorpayWebhookSecret, RazorpayBaseURL, SMTPHost, SMTPUsername, SMTPPassword, SMTPFrom, QuaiRPCURL, QuaiContractAddress, QuaiBridgeURL, QuaiBridgeToken, DeviceAPIKeyPepper string
+	AccessTTL, RefreshTTL                                                                                                                                                                                                                           time.Duration
+	QuaiChainID                                                                                                                                                                                                                                     int64
+	RateLimitRPS                                                                                                                                                                                                                                    float64
+	MaxTickets                                                                                                                                                                                                                                      int
+	LoginMaxAttempts                                                                                                                                                                                                                                int
+	LoginLockout                                                                                                                                                                                                                                    time.Duration
+	QuaiConfirmations                                                                                                                                                                                                                               int
 }
 
 func Load() (Config, error) {
 	_ = godotenv.Load()
-	c := Config{HTTPAddr: env("HTTP_ADDR", ":8080"), DatabaseURL: os.Getenv("DATABASE_URL"), JWTSecret: os.Getenv("JWT_SECRET"), RazorpayKeyID: os.Getenv("RAZORPAY_KEY_ID"), RazorpayKeySecret: os.Getenv("RAZORPAY_KEY_SECRET"), RazorpayWebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"), SMTPHost: os.Getenv("SMTP_HOST"), SMTPUsername: os.Getenv("SMTP_USERNAME"), SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"), QuaiRPCURL: env("QUAI_RPC_URL", "https://orchard.rpc.quai.network/cyprus1"), QuaiContractAddress: os.Getenv("QUAI_CONTRACT_ADDRESS"), QuaiPrivateKey: os.Getenv("QUAI_PRIVATE_KEY"), DeviceAPIKeyPepper: os.Getenv("DEVICE_API_KEY_PEPPER"), AccessTTL: duration("ACCESS_TOKEN_TTL", 15*time.Minute), RefreshTTL: duration("REFRESH_TOKEN_TTL", 30*24*time.Hour), QuaiChainID: int64(integer("QUAI_CHAIN_ID", 15000)), RateLimitRPS: decimal("RATE_LIMIT_RPS", 10), MaxTickets: integer("MAX_TICKETS_PER_BOOKING", 8)}
+	c := Config{HTTPAddr: env("HTTP_ADDR", ":8080"), DatabaseURL: os.Getenv("DATABASE_URL"), JWTSecret: os.Getenv("JWT_SECRET"), RazorpayKeyID: os.Getenv("RAZORPAY_KEY_ID"), RazorpayKeySecret: os.Getenv("RAZORPAY_KEY_SECRET"), RazorpayWebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"), RazorpayBaseURL: env("RAZORPAY_BASE_URL", "https://api.razorpay.com/v1"), SMTPHost: os.Getenv("SMTP_HOST"), SMTPUsername: os.Getenv("SMTP_USERNAME"), SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"), QuaiRPCURL: env("QUAI_RPC_URL", "https://orchard.rpc.quai.network"), QuaiContractAddress: os.Getenv("QUAI_CONTRACT_ADDRESS"), QuaiBridgeURL: env("QUAI_BRIDGE_URL", "http://quai-bridge:8090"), QuaiBridgeToken: os.Getenv("QUAI_BRIDGE_TOKEN"), DeviceAPIKeyPepper: os.Getenv("DEVICE_API_KEY_PEPPER"), AccessTTL: duration("ACCESS_TOKEN_TTL", 15*time.Minute), RefreshTTL: duration("REFRESH_TOKEN_TTL", 30*24*time.Hour), QuaiChainID: int64(integer("QUAI_CHAIN_ID", 15000)), QuaiConfirmations: integer("QUAI_CONFIRMATIONS", 1), RateLimitRPS: decimal("RATE_LIMIT_RPS", 10), MaxTickets: integer("MAX_TICKETS_PER_BOOKING", 8), LoginMaxAttempts: integer("LOGIN_MAX_ATTEMPTS", 5), LoginLockout: duration("LOGIN_LOCKOUT_DURATION", 15*time.Minute)}
 	if c.DatabaseURL == "" || len(c.JWTSecret) < 32 {
 		return c, errors.New("DATABASE_URL and JWT_SECRET (at least 32 characters) are required")
 	}
 	if c.DeviceAPIKeyPepper != "" && len(c.DeviceAPIKeyPepper) < 32 {
 		return c, errors.New("DEVICE_API_KEY_PEPPER must be at least 32 characters when configured")
+	}
+	if c.QuaiBridgeToken != "" && len(c.QuaiBridgeToken) < 32 {
+		return c, errors.New("QUAI_BRIDGE_TOKEN must be at least 32 characters when configured")
 	}
 	if (c.RazorpayKeyID != "" || c.RazorpayKeySecret != "" || c.RazorpayWebhookSecret != "") && (c.RazorpayKeyID == "" || c.RazorpayKeySecret == "" || c.RazorpayWebhookSecret == "") {
 		return c, errors.New("all three Razorpay credentials must be configured together")

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -56,4 +57,10 @@ func RandomToken() (string, error) {
 func SHA256Hex(value []byte) string {
 	digest := sha256.Sum256(value)
 	return hex.EncodeToString(digest[:])
+}
+
+func HMACSHA256Hex(secret string, value []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(value)
+	return hex.EncodeToString(mac.Sum(nil))
 }
