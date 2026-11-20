@@ -1,0 +1,72 @@
+openapi: 3.0.3
+info:
+  title: FAIRPASS API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        '200': { description: Healthy }
+        '503': { description: Database unavailable }
+  /v1/auth/register:
+    post:
+      summary: Register an attendee or organizer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12 }
+                role: { type: string, enum: [attendee, organizer] }
+      responses:
+        '200': { description: Access and refresh tokens }
+        '409': { description: Email already registered }
+  /v1/auth/login:
+    post:
+      summary: Login
+      responses:
+        '200': { description: Access and refresh tokens }
+        '401': { description: Invalid credentials }
+  /v1/events:
+    get:
+      summary: List published events
+      responses:
+        '200': { description: Published events }
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Create a draft event
+      responses:
+        '201': { description: Created }
+  /v1/bookings:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Reserve tickets with an idempotency key
+      responses:
+        '201': { description: Pending payment booking }
+        '409': { description: Insufficient inventory }
+  /v1/bookings/{id}/payment-order:
+    post:
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      summary: Create a Razorpay order for a pending booking
+      responses:
+        '201': { description: Razorpay order }
+  /v1/gate/verify:
+    post:
+      security: [{ deviceKey: [] }]
+      summary: Atomically verify and redeem a ticket
+      responses:
+        '200': { description: Scan decision }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    deviceKey: { type: apiKey, in: header, name: X-Device-Key }
