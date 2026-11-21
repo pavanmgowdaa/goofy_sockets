@@ -1,0 +1,32 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Database backups and local database files
+*.dump
+*.backup
+*.sqlite
+*.sqlite3
+*.db
+*.sql.gz
+
+# Local database storage
+database/data/
+postgres-data/
+
+# Local backups
+backend/go-backup/
+database/local-backup/
+
+# Build outputs
+bin/
+*.exe
+*.zip
+.gotmp/

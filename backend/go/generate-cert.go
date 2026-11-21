@@ -30,7 +30,9 @@ func main() {
 			x509.ExtKeyUsageServerAuth,
 		},
 		DNSNames: []string{"localhost"},
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+		IPAddresses: []net.IP{
+			net.ParseIP("127.0.0.1"),
+		},
 	}
 
 	certDER, err := x509.CreateCertificate(
@@ -39,12 +41,14 @@ func main() {
 	)
 	check(err)
 
+	_ = os.MkdirAll("certs", 0755)
+
 	certFile, err := os.Create("certs/server-cert.pem")
 	check(err)
 	defer certFile.Close()
 
 	check(pem.Encode(certFile, &pem.Block{
-		Type: "CERTIFICATE",
+		Type:  "CERTIFICATE",
 		Bytes: certDER,
 	}))
 
@@ -56,7 +60,7 @@ func main() {
 	check(err)
 
 	check(pem.Encode(keyFile, &pem.Block{
-		Type: "EC PRIVATE KEY",
+		Type:  "EC PRIVATE KEY",
 		Bytes: keyBytes,
 	}))
 
